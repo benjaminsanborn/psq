@@ -5,7 +5,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type App struct {
@@ -39,6 +41,8 @@ type Model struct {
 	service     string
 	lastQuery   Query
 	autoRefresh bool
+	viewport    viewport.Model
+	ready       bool
 }
 
 type Query struct {
@@ -58,6 +62,7 @@ func NewModel(service string) *Model {
 			err:         fmt.Sprintf("Failed to load queries: %v", err),
 			service:     service,
 			autoRefresh: false,
+			ready:       false,
 		}
 	}
 
@@ -67,6 +72,7 @@ func NewModel(service string) *Model {
 		results:     "Select a query to run...",
 		service:     service,
 		autoRefresh: false,
+		ready:       false,
 	}
 }
 
@@ -83,13 +89,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "up", "k":
-			if m.selected > 0 {
-				m.selected--
+			if msg.Alt {
+				m.viewport.LineUp(1)
+			} else {
+				if m.selected > 0 {
+					m.selected--
+				}
 			}
 		case "down", "j":
-			if m.selected < len(m.queries)-1 {
-				m.selected++
+			if msg.Alt {
+				m.viewport.LineDown(1)
+			} else {
+				if m.selected < len(m.queries)-1 {
+					m.selected++
+				}
 			}
+		case "pageup":
+			m.viewport.HalfViewUp()
+		case "pagedown":
+			m.viewport.HalfViewDown()
+		case "home":
+			m.viewport.GotoTop()
+		case "end":
+			m.viewport.GotoBottom()
 		case "enter", " ":
 			if len(m.queries) > 0 {
 				m.loading = true
@@ -112,6 +134,33 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+
+		if !m.ready {
+			// Initialize viewport on first window size message
+			headerHeight := 8 // Title + controls + query list
+			footerHeight := 0
+			verticalMarginHeight := headerHeight + footerHeight
+
+			m.viewport = viewport.New(msg.Width, msg.Height-verticalMarginHeight)
+			m.viewport.Style = lipgloss.NewStyle().
+				BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("62")).
+				PaddingRight(2)
+
+			m.ready = true
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = msg.Height - 8
+		}
+
+		// Update viewport content
+		if m.loading {
+			m.viewport.SetContent("Running query...")
+		} else if m.err != "" {
+			m.viewport.SetContent("Error: " + m.err)
+		} else {
+			m.viewport.SetContent(m.results)
+		}
 	case queryResultMsg:
 		m.results = string(msg)
 		m.loading = false
@@ -135,8 +184,8 @@ func (m *Model) View() string {
 		return "Initializing..."
 	}
 
-	s := "PostgreSQL Monitor\n\n"
-	s += "Use ↑/↓ to navigate, Enter to run query (auto-refresh), r to run once, a to toggle auto-refresh, q to quit\n"
+	s := "Navigation: ↑/↓ to select query, Alt+↑/↓ to scroll, PgUp/PgDn for half page, Home/End for top/bottom\n"
+	s += "Controls: Enter to run query (auto-refresh), r to run once, a to toggle auto-refresh, q to quit\n"
 	if m.autoRefresh {
 		s += "Auto-refresh: ON (every 2s)\n"
 	} else {
@@ -145,25 +194,31 @@ func (m *Model) View() string {
 	s += "\n"
 
 	// Query list
-	s += "Queries:\n"
 	for i, query := range m.queries {
 		if i == m.selected {
-			s += "> " + query.Name + "\n"
+			s += "> " + query.Name
 		} else {
-			s += "  " + query.Name + "\n"
+			s += "  " + query.Name
+		}
+		if i < len(m.queries)-1 {
+			s += " | "
 		}
 	}
+	s += "\n"
 
-	s += "\n" + strings.Repeat("─", m.width) + "\n\n"
+	s += "\n" + strings.Repeat("─", m.width) + "\n"
 
-	// Results
+	// Update viewport content
 	if m.loading {
-		s += "Running query..."
+		m.viewport.SetContent("Running query...")
 	} else if m.err != "" {
-		s += "Error: " + m.err
+		m.viewport.SetContent("Error: " + m.err)
 	} else {
-		s += m.results
+		m.viewport.SetContent(m.results)
 	}
+
+	// Add viewport to output
+	s += "\n" + m.viewport.View()
 
 	return s
 }
