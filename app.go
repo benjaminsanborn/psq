@@ -71,7 +71,7 @@ func NewModel(service string) *Model {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -122,7 +122,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.autoRefresh && len(m.queries) > 0 {
 			return m, m.runQuery(m.lastQuery)
 		}
-		return m, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 			return tickMsg(t)
 		})
 	}
@@ -138,7 +138,7 @@ func (m *Model) View() string {
 	s := "PostgreSQL Monitor\n\n"
 	s += "Use ↑/↓ to navigate, Enter to run query (auto-refresh), r to run once, a to toggle auto-refresh, q to quit\n"
 	if m.autoRefresh {
-		s += "Auto-refresh: ON (every 5s)\n"
+		s += "Auto-refresh: ON (every 2s)\n"
 	} else {
 		s += "Auto-refresh: OFF\n"
 	}

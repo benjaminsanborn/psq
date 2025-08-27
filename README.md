@@ -76,17 +76,18 @@ Run the monitoring interface:
 
 ```bash
 # Use default service
-./pgmon monitor
+./pgmon
 
 # Use specific service from ~/.pg_service.conf
-./pgmon monitor --service prod
-./pgmon monitor -s prod
+./pgmon prod
+./pgmon --service prod
+./pgmon -s prod
 ```
 
 ### Navigation
 
 - **↑/↓** or **j/k**: Navigate between queries
-- **Enter** or **Space**: Execute selected query with auto-refresh (every 5 seconds)
+- **Enter** or **Space**: Execute selected query with auto-refresh (every 2 seconds)
 - **r**: Execute selected query once (no auto-refresh)
 - **a**: Toggle auto-refresh on/off
 - **q** or **Ctrl+C**: Quit the application
