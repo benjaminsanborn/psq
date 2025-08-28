@@ -145,8 +145,7 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 	// Calculate column widths
 	colWidths := make([]int, len(columns))
 	for i, col := range columns {
-		// Account for header padding (2 extra spaces from Padding(0, 1))
-		colWidths[i] = len(col) + 2
+		colWidths[i] = len(col) + 1
 	}
 
 	for _, row := range allRows {
@@ -161,8 +160,7 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 	headerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#FAFAFA")).
 		Background(lipgloss.Color("#7D56F4")).
-		Bold(true).
-		Padding(0, 1)
+		Bold(true)
 
 	borderStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#626262"))
@@ -177,7 +175,7 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 	var result strings.Builder
 
 	// Write header border
-	result.WriteString(borderStyle.Render("┌"))
+	result.WriteString(borderStyle.Render(" ┌"))
 	for i := range columns {
 		if i > 0 {
 			result.WriteString(borderStyle.Render("┬"))

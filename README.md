@@ -87,14 +87,14 @@ Run the monitoring interface:
 ### Navigation
 
 Query Selection:
-- **↑/↓** or **j/k**: Navigate between queries
+- **←/→** or **h/l**: Navigate between queries
 - **Enter** or **Space**: Execute selected query with auto-refresh (every 2 seconds)
 - **r**: Execute selected query once (no auto-refresh)
 - **a**: Toggle auto-refresh on/off
 - **q** or **Ctrl+C**: Quit the application
 
 Results Navigation:
-- **Alt+↑/↓**: Scroll results up/down by line
+- **↑/↓** or **j/k**: Scroll results up/down by line
 - **PgUp/PgDn**: Scroll half page up/down
 - **Home/End**: Jump to top/bottom of results
 

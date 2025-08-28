@@ -31,18 +31,18 @@ func (a *App) Run() error {
 }
 
 type Model struct {
-	queries     []Query
-	selected    int
-	results     string
-	loading     bool
-	err         string
-	width       int
-	height      int
-	service     string
-	lastQuery   Query
-	autoRefresh bool
-	viewport    viewport.Model
-	ready       bool
+	queries       []Query
+	selected      int
+	results       string
+	loading       bool
+	err           string
+	width         int
+	height        int
+	service       string
+	lastQuery     Query
+	viewport      viewport.Model
+	ready         bool
+	lastRefreshAt time.Time
 }
 
 type Query struct {
@@ -57,22 +57,20 @@ func NewModel(service string) *Model {
 	queries, err := loadQueries()
 	if err != nil {
 		return &Model{
-			queries:     []Query{},
-			selected:    0,
-			err:         fmt.Sprintf("Failed to load queries: %v", err),
-			service:     service,
-			autoRefresh: false,
-			ready:       false,
+			queries:  []Query{},
+			selected: 0,
+			err:      fmt.Sprintf("Failed to load queries: %v", err),
+			service:  service,
+			ready:    false,
 		}
 	}
 
 	return &Model{
-		queries:     queries,
-		selected:    0,
-		results:     "Select a query to run...",
-		service:     service,
-		autoRefresh: false,
-		ready:       false,
+		queries:  queries,
+		selected: 0,
+		results:  "Select a query to run...",
+		service:  service,
+		ready:    false,
 	}
 }
 
@@ -85,25 +83,44 @@ func (m *Model) Init() tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if !m.ready {
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+
+		// Query selection
+		case "left", "h":
+			if m.selected > 0 {
+				m.selected--
+				m.loading = true
+				m.err = ""
+				m.results = ""
+				m.lastQuery = m.queries[m.selected]
+				m.lastRefreshAt = time.Now()
+				// Update display immediately
+				return m, m.runQuery(m.queries[m.selected])
+			}
+		case "right", "l":
+			if m.selected < len(m.queries)-1 {
+				m.selected++
+				m.loading = true
+				m.err = ""
+				m.results = ""
+				m.lastQuery = m.queries[m.selected]
+				m.lastRefreshAt = time.Now()
+				// Update display immediately
+				m.updateContent()
+				return m, m.runQuery(m.queries[m.selected])
+			}
+
+		// Results viewport scrolling
 		case "up", "k":
-			if msg.Alt {
-				m.viewport.LineUp(1)
-			} else {
-				if m.selected > 0 {
-					m.selected--
-				}
-			}
+			m.viewport.LineUp(1)
 		case "down", "j":
-			if msg.Alt {
-				m.viewport.LineDown(1)
-			} else {
-				if m.selected < len(m.queries)-1 {
-					m.selected++
-				}
-			}
+			m.viewport.LineDown(1)
 		case "pageup":
 			m.viewport.HalfViewUp()
 		case "pagedown":
@@ -112,63 +129,65 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoTop()
 		case "end":
 			m.viewport.GotoBottom()
-		case "enter", " ":
-			if len(m.queries) > 0 {
+
+		// Query execution
+		case "enter", " ", "r":
+			if len(m.queries) > 0 && m.canRefresh() {
 				m.loading = true
 				m.err = ""
 				m.lastQuery = m.queries[m.selected]
-				m.autoRefresh = true
+				m.lastRefreshAt = time.Now()
 				return m, m.runQuery(m.queries[m.selected])
 			}
-		case "r":
-			if len(m.queries) > 0 {
-				m.loading = true
-				m.err = ""
-				m.lastQuery = m.queries[m.selected]
-				m.autoRefresh = false
-				return m, m.runQuery(m.queries[m.selected])
-			}
-		case "a":
-			m.autoRefresh = !m.autoRefresh
+		}
+
+		// Update content after any key press
+		if m.ready {
+			m.updateContent()
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 
 		if !m.ready {
-			// Initialize viewport on first window size message
-			headerHeight := 8 // Title + controls + query list
-			footerHeight := 0
-			verticalMarginHeight := headerHeight + footerHeight
-
-			m.viewport = viewport.New(msg.Width, msg.Height-verticalMarginHeight)
+			m.viewport = viewport.New(msg.Width, msg.Height)
 			m.viewport.Style = lipgloss.NewStyle().
 				BorderStyle(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("62")).
-				PaddingRight(2)
-
+				BorderForeground(lipgloss.Color("62"))
 			m.ready = true
+
+			// Execute first query immediately when ready
+			if len(m.queries) > 0 {
+				m.loading = true
+				m.lastQuery = m.queries[m.selected]
+				m.updateContent()
+				return m, m.runQuery(m.queries[m.selected])
+			}
 		} else {
 			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height - 8
+			m.viewport.Height = msg.Height
 		}
 
-		// Update viewport content
-		if m.loading {
-			m.viewport.SetContent("Running query...")
-		} else if m.err != "" {
-			m.viewport.SetContent("Error: " + m.err)
-		} else {
-			m.viewport.SetContent(m.results)
-		}
+		m.updateContent()
 	case queryResultMsg:
 		m.results = string(msg)
 		m.loading = false
+		m.updateContent()
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+			return tickMsg(t)
+		})
 	case queryErrorMsg:
 		m.err = string(msg)
 		m.loading = false
+		m.updateContent()
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+			return tickMsg(t)
+		})
 	case tickMsg:
-		if m.autoRefresh && len(m.queries) > 0 {
+		if len(m.queries) > 0 && m.canRefresh() {
+			m.loading = true
+			m.lastRefreshAt = time.Now()
+			m.updateContent()
 			return m, m.runQuery(m.lastQuery)
 		}
 		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
@@ -179,46 +198,55 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) updateContent() {
+	var content string
+
+	// Header section
+	content += "Navigation: ←/→ to select query, ↑/↓ to scroll, PgUp/PgDn for half page, Home/End for top/bottom\n"
+	content += "Controls: Enter/Space/r to run query now, q to quit\n"
+	content += "Auto-refresh: Every 2s\n"
+
+	// Query list
+	content += "\nQueries: "
+	for i, query := range m.queries {
+		if i == m.selected {
+			content += lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("86")).
+				Render(query.Name)
+		} else {
+			content += query.Name
+		}
+		if i < len(m.queries)-1 {
+			content += " | "
+		}
+	}
+	content += "\n\n" + lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240")).
+		Render(strings.Repeat("─", m.width)) + "\n\n"
+
+	// Results section
+	if m.err != "" {
+		content += "Error: " + m.err
+	} else {
+		content += m.results
+	}
+
+	m.viewport.SetContent(content)
+}
+
+func (m *Model) canRefresh() bool {
+	return time.Since(m.lastRefreshAt) >= 500*time.Millisecond
+}
+
 func (m *Model) View() string {
 	if m.width == 0 {
 		return "Initializing..."
 	}
 
-	s := "Navigation: ↑/↓ to select query, Alt+↑/↓ to scroll, PgUp/PgDn for half page, Home/End for top/bottom\n"
-	s += "Controls: Enter to run query (auto-refresh), r to run once, a to toggle auto-refresh, q to quit\n"
-	if m.autoRefresh {
-		s += "Auto-refresh: ON (every 2s)\n"
-	} else {
-		s += "Auto-refresh: OFF\n"
-	}
-	s += "\n"
-
-	// Query list
-	for i, query := range m.queries {
-		if i == m.selected {
-			s += "> " + query.Name
-		} else {
-			s += "  " + query.Name
-		}
-		if i < len(m.queries)-1 {
-			s += " | "
-		}
-	}
-	s += "\n"
-
-	s += "\n" + strings.Repeat("─", m.width) + "\n"
-
-	// Update viewport content
-	if m.loading {
-		m.viewport.SetContent("Running query...")
-	} else if m.err != "" {
-		m.viewport.SetContent("Error: " + m.err)
-	} else {
-		m.viewport.SetContent(m.results)
+	if !m.ready {
+		return "Getting ready..."
 	}
 
-	// Add viewport to output
-	s += "\n" + m.viewport.View()
-
-	return s
+	return m.viewport.View()
 }

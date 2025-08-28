@@ -44,32 +44,22 @@ func createDefaultQueries(configPath string) error {
 
 	defaultQueries := []Query{
 		{
-			Name:        "Active Connections",
+			Name:        "Active",
 			Description: "Show current active connections",
-			SQL:         "SELECT pid, usename, client_addr, state, NOW() - query_start AS age, state_change FROM pg_stat_activity WHERE state IS NOT NULL ORDER BY query_start DESC;",
+			SQL:         "SELECT pid, usename, state, NOW() - query_start AS age, state_change FROM pg_stat_activity WHERE state IS NOT NULL AND state != 'idle' ORDER BY query_start DESC;",
 		},
 		{
-			Name:        "Subscription Status",
+			Name:        "Subscriptions",
 			Description: "Show logical replication subscription status",
 			SQL:         "SELECT subname, pid, received_lsn, latest_end_lsn, latest_end_time FROM pg_stat_subscription;",
 		},
 		{
-			Name:        "Index Creation Progress",
+			Name:        "Index Creation",
 			Description: "Show progress of index creation operations",
 			SQL:         "SELECT pid, datname, relid, index_relid, command, phase, blocks_total, blocks_done, tuples_total, tuples_done FROM pg_stat_progress_create_index;",
 		},
 		{
-			Name:        "Database Size",
-			Description: "Show database sizes",
-			SQL:         "SELECT datname, pg_size_pretty(pg_database_size(datname)) as size FROM pg_database ORDER BY pg_database_size(datname) DESC;",
-		},
-		{
-			Name:        "Table Sizes",
-			Description: "Show largest tables",
-			SQL:         "SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size FROM pg_tables ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC LIMIT 20;",
-		},
-		{
-			Name:        "Lock Information",
+			Name:        "Locks",
 			Description: "Show current locks",
 			SQL:         "SELECT l.pid, l.mode, l.granted, a.usename, a.query FROM pg_locks l JOIN pg_stat_activity a ON l.pid = a.pid WHERE NOT l.granted ORDER BY l.pid;",
 		},
@@ -77,6 +67,11 @@ func createDefaultQueries(configPath string) error {
 			Name:        "Slow Queries",
 			Description: "Show long-running queries",
 			SQL:         "SELECT pid, usename, application_name, client_addr, state, query_start, now() - query_start as duration, query FROM pg_stat_activity WHERE state = 'active' AND query_start < now() - interval '5 seconds' ORDER BY query_start;",
+		},
+		{
+			Name:        "Table Replication",
+			Description: "Replication status of all tables in public schema",
+			SQL:         "SELECT s.subname AS subscription, r.srsubstate AS table_state, ARRAY_AGG(c.relname ORDER BY c.relname) AS tables FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_subscription_rel r ON r.srrelid = c.oid LEFT JOIN pg_subscription s     ON s.oid = r.srsubid WHERE n.nspname = 'public' AND c.relkind IN ('r','p','f') GROUP BY s.subname, r.srsubstate ORDER BY s.subname, r.srsubstate;",
 		},
 		{
 			Name:        "Replication Lag",
