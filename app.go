@@ -232,12 +232,15 @@ func (m *Model) updateContent() {
 	var content string
 
 	// Header section
-	content += "Navigation: ←/→ to select query, ↑/↓ to scroll, PgUp/PgDn for half page, Home/End for top/bottom\n"
-	content += "Controls: Enter/Space/r to run query now, e to edit query, q to quit\n"
-	content += "Auto-refresh: Every 2s\n"
+	content += lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("86")).
+		Padding(0, 1).
+		Render("pgi")
+	content += ": ←/→ to select query, e to edit query, q to quit\n"
 
 	// Query list
-	content += "\nQueries: "
+	content += "\n "
 	for i, query := range m.queries {
 		if i == m.selected {
 			content += lipgloss.NewStyle().
@@ -251,9 +254,9 @@ func (m *Model) updateContent() {
 			content += " | "
 		}
 	}
-	content += "\n\n" + lipgloss.NewStyle().
+	content += "\n" + lipgloss.NewStyle().
 		Foreground(lipgloss.Color("240")).
-		Render(strings.Repeat("─", m.width)) + "\n\n"
+		Render(strings.Repeat("─", m.width)) + "\n"
 
 	// Results section
 	if m.err != "" {
