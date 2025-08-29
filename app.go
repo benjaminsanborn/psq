@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -139,6 +142,34 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.lastRefreshAt = time.Now()
 				return m, m.runQuery(m.queries[m.selected])
 			}
+		case "e":
+			if len(m.queries) > 0 {
+				configPath := filepath.Join(os.ExpandEnv("$HOME"), ".pgi", "queries.json")
+				editor := os.Getenv("EDITOR")
+				if editor == "" {
+					editor = "vi"
+				}
+				cmd := exec.Command(editor, configPath)
+				cmd.Stdin = os.Stdin
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+
+				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+					if err != nil {
+						return queryErrorMsg(fmt.Sprintf("Failed to edit query: %v", err))
+					}
+					// Reload queries
+					queries, err := loadQueries()
+					if err != nil {
+						return queryErrorMsg(fmt.Sprintf("Failed to reload queries: %v", err))
+					}
+					m.queries = queries
+					if m.selected >= len(queries) {
+						m.selected = len(queries) - 1
+					}
+					return nil
+				})
+			}
 		}
 
 		// Update content after any key press
@@ -203,7 +234,7 @@ func (m *Model) updateContent() {
 
 	// Header section
 	content += "Navigation: ←/→ to select query, ↑/↓ to scroll, PgUp/PgDn for half page, Home/End for top/bottom\n"
-	content += "Controls: Enter/Space/r to run query now, q to quit\n"
+	content += "Controls: Enter/Space/r to run query now, e to edit query, q to quit\n"
 	content += "Auto-refresh: Every 2s\n"
 
 	// Query list

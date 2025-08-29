@@ -1,4 +1,4 @@
-# pgmon - PostgreSQL Monitoring CLI
+# pgi - PostgreSQL Monitoring CLI
 
 A TUI-based PostgreSQL monitoring tool built with Go and Bubble Tea that reads database connections from `~/.pg_service.conf`.
 
@@ -19,7 +19,7 @@ A TUI-based PostgreSQL monitoring tool built with Go and Bubble Tea that reads d
    ```
 3. Build the application:
    ```bash
-   go build -o pgmon
+   go build -o pgi
    ```
 
 ## Configuration
@@ -53,7 +53,7 @@ password=staging_password
 
 ### Queries Configuration
 
-The tool automatically creates `~/.pgmon/queries.json` on first run with default monitoring queries. You can edit this file to add, modify, or remove queries:
+The tool automatically creates `~/.pgi/queries.json` on first run with default monitoring queries. You can edit this file to add, modify, or remove queries:
 
 ```json
 [
@@ -76,12 +76,12 @@ Run the monitoring interface:
 
 ```bash
 # Use default service
-./pgmon
+./pgi
 
 # Use specific service from ~/.pg_service.conf
-./pgmon prod
-./pgmon --service prod
-./pgmon -s prod
+./pgi prod
+./pgi --service prod
+./pgi -s prod
 ```
 
 ### Navigation
@@ -89,8 +89,8 @@ Run the monitoring interface:
 Query Selection:
 - **←/→** or **h/l**: Navigate between queries
 - **Enter** or **Space**: Execute selected query with auto-refresh (every 2 seconds)
-- **r**: Execute selected query once (no auto-refresh)
-- **a**: Toggle auto-refresh on/off
+- **r**: Execute selected query now
+- **e**: Edit queries in vi (or $EDITOR)
 - **q** or **Ctrl+C**: Quit the application
 
 Results Navigation:
@@ -115,7 +115,7 @@ The tool comes with these pre-configured monitoring queries:
 
 To add your own monitoring queries:
 
-1. Edit `~/.pgmon/queries.json`
+1. Edit `~/.pgi/queries.json`
 2. Add a new query object with:
    - `name`: Display name for the query
    - `description`: Brief description

@@ -1,4 +1,4 @@
-module pgmon
+module pgi
 
 go 1.23.0
 

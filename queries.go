@@ -13,7 +13,7 @@ type queryResultMsg string
 type queryErrorMsg string
 
 func loadQueries() ([]Query, error) {
-	configPath := filepath.Join(os.ExpandEnv("$HOME"), ".pgmon", "queries.json")
+	configPath := filepath.Join(os.ExpandEnv("$HOME"), ".pgi", "queries.json")
 
 	// Create default queries if file doesn't exist
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
