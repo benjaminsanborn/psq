@@ -139,7 +139,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loading = true
 				m.err = ""
 				m.lastQuery = m.queries[m.selected]
-				m.lastRefreshAt = time.Now()
 				return m, m.runQuery(m.queries[m.selected])
 			}
 		case "e":
@@ -203,6 +202,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case queryResultMsg:
 		m.results = string(msg)
 		m.loading = false
+		m.lastRefreshAt = time.Now()
 		m.updateContent()
 		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 			return tickMsg(t)
@@ -217,7 +217,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		if len(m.queries) > 0 && m.canRefresh() {
 			m.loading = true
-			m.lastRefreshAt = time.Now()
 			m.updateContent()
 			return m, m.runQuery(m.lastQuery)
 		}
