@@ -46,37 +46,32 @@ func createDefaultQueries(configPath string) error {
 		{
 			Name:        "Active",
 			Description: "Show current active connections",
-			SQL:         "SELECT pid, usename, state, NOW() - query_start AS age, state_change FROM pg_stat_activity WHERE state IS NOT NULL AND state != 'idle' ORDER BY query_start DESC;",
+			SQL:         "SELECT pid, LEFT(query,50) AS query, LEFT(usename,8) AS name, LEFT(state,10) AS state, LEFT((NOW() - query_start)::text,8) as age, wait_event, wait_event_type FROM pg_stat_activity WHERE state IS NOT NULL AND state != 'idle' ORDER BY NOW() - query_start DESC;",
 		},
 		{
-			Name:        "Subscriptions",
-			Description: "Show logical replication subscription status",
-			SQL:         "SELECT subname, pid, received_lsn, latest_end_lsn, latest_end_time FROM pg_stat_subscription;",
-		},
-		{
-			Name:        "Index Creation",
-			Description: "Show progress of index creation operations",
-			SQL:         "SELECT pid, datname, relid, index_relid, command, phase, blocks_total, blocks_done, tuples_total, tuples_done FROM pg_stat_progress_create_index;",
-		},
-		{
-			Name:        "Locks",
+			Name:        "Lock Information",
 			Description: "Show current locks",
 			SQL:         "SELECT l.pid, l.mode, l.granted, a.usename, a.query FROM pg_locks l JOIN pg_stat_activity a ON l.pid = a.pid WHERE NOT l.granted ORDER BY l.pid;",
 		},
 		{
-			Name:        "Slow Queries",
-			Description: "Show long-running queries",
-			SQL:         "SELECT pid, usename, application_name, client_addr, state, query_start, now() - query_start as duration, query FROM pg_stat_activity WHERE state = 'active' AND query_start < now() - interval '5 seconds' ORDER BY query_start;",
-		},
-		{
-			Name:        "Table Replication",
-			Description: "Replication status of all tables in public schema",
-			SQL:         "SELECT s.subname AS subscription, r.srsubstate AS table_state, ARRAY_AGG(c.relname ORDER BY c.relname) AS tables FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_subscription_rel r ON r.srrelid = c.oid LEFT JOIN pg_subscription s     ON s.oid = r.srsubid WHERE n.nspname = 'public' AND c.relkind IN ('r','p','f') GROUP BY s.subname, r.srsubstate ORDER BY s.subname, r.srsubstate;",
-		},
-		{
 			Name:        "Replication Lag",
 			Description: "Show replication lag information",
-			SQL:         "SELECT application_name, client_addr, state, sent_lsn, write_lsn, flush_lsn, replay_lsn, pg_wal_lsn_diff(sent_lsn, replay_lsn) as lag_bytes FROM pg_stat_replication;",
+			SQL:         "SELECT application_name, pg_wal_lsn_diff(sent_lsn, replay_lsn) as lag_bytes, client_addr, state, sent_lsn, write_lsn, flush_lsn, replay_lsn FROM pg_stat_replication;",
+		},
+		{
+			Name:        "Top Queries",
+			Description: "Requires pg_stat_statements; identifies heavy hitters",
+			SQL:         "SELECT LEFT(query, 40) AS query, calls, total_exec_time, mean_exec_time, rows, shared_blks_hit, shared_blks_read, temp_blks_written FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 25;",
+		},
+		{
+			Name:        "Index Creation",
+			Description: "Show progress of index creation operations",
+			SQL:         "SELECT p.pid, c.relname AS table_name, ic.relname AS index_name, p.phase, p.lockers_done || '/' || p.lockers_total AS locks, p.blocks_done || '/' || p.blocks_total AS blocks, p.tuples_done || '/' || p.tuples_total AS tupes, p.partitions_done || '/' || p.partitions_total AS parts FROM pg_stat_progress_create_index p JOIN pg_class c  ON p.relid = c.oid JOIN pg_class ic ON p.index_relid = ic.oid;",
+		},
+		{
+			Name:        "Table Replication State",
+			Description: "The state of logical replication for each table in the public schema",
+			SQL:         "SELECT s.subname AS subscription, r.srsubstate AS table_state, ARRAY_AGG(c.relname ORDER BY c.relname) AS tables FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_subscription_rel r ON r.srrelid = c.oid LEFT JOIN pg_subscription s     ON s.oid = r.srsubid WHERE n.nspname = 'public' AND c.relkind IN ('r','p','f') GROUP BY s.subname, r.srsubstate ORDER BY s.subname, r.srsubstate;",
 		},
 	}
 
