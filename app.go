@@ -143,12 +143,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "e":
 			if len(m.queries) > 0 {
-				configPath := filepath.Join(os.ExpandEnv("$HOME"), ".pgi", "queries.json")
+				configDir := filepath.Join(os.ExpandEnv("$HOME"), ".pgi")
+				sqlDir := filepath.Join(configDir, "queries")
+				
+				// Check if using SQL directory or JSON file
+				var editPath string
+				if _, err := os.Stat(sqlDir); err == nil {
+					// Edit the queries directory
+					editPath = sqlDir
+				} else {
+					// Edit the JSON file
+					editPath = filepath.Join(configDir, "queries.json")
+				}
+				
 				editor := os.Getenv("EDITOR")
 				if editor == "" {
 					editor = "vi"
 				}
-				cmd := exec.Command(editor, configPath)
+				cmd := exec.Command(editor, editPath)
 				cmd.Stdin = os.Stdin
 				cmd.Stdout = os.Stdout
 				cmd.Stderr = os.Stderr

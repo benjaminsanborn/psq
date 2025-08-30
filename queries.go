@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -13,16 +14,24 @@ type queryResultMsg string
 type queryErrorMsg string
 
 func loadQueries() ([]Query, error) {
-	configPath := filepath.Join(os.ExpandEnv("$HOME"), ".pgi", "queries.json")
+	configDir := filepath.Join(os.ExpandEnv("$HOME"), ".pgi")
+	sqlDir := filepath.Join(configDir, "queries")
+	jsonPath := filepath.Join(configDir, "queries.json")
 
+	// Check if SQL directory exists and has files
+	if sqlFiles, err := filepath.Glob(filepath.Join(sqlDir, "*.sql")); err == nil && len(sqlFiles) > 0 {
+		return loadQueriesFromSQL(sqlDir)
+	}
+
+	// Fall back to JSON format
 	// Create default queries if file doesn't exist
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		if err := createDefaultQueries(configPath); err != nil {
+	if _, err := os.Stat(jsonPath); os.IsNotExist(err) {
+		if err := createDefaultQueries(jsonPath); err != nil {
 			return nil, err
 		}
 	}
 
-	data, err := os.ReadFile(configPath)
+	data, err := os.ReadFile(jsonPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read queries config: %w", err)
 	}
@@ -35,6 +44,69 @@ func loadQueries() ([]Query, error) {
 	return queries, nil
 }
 
+func loadQueriesFromSQL(sqlDir string) ([]Query, error) {
+	files, err := filepath.Glob(filepath.Join(sqlDir, "*.sql"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read SQL directory: %w", err)
+	}
+
+	var queries []Query
+	for _, file := range files {
+		query, err := loadQueryFromSQLFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load query from %s: %w", file, err)
+		}
+		queries = append(queries, query)
+	}
+
+	return queries, nil
+}
+
+func loadQueryFromSQLFile(filename string) (Query, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return Query{}, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	if len(lines) < 3 {
+		return Query{}, fmt.Errorf("invalid SQL file format: must have title, description, and query")
+	}
+
+	// Parse title from first line (-- Title)
+	title := strings.TrimSpace(strings.TrimPrefix(lines[0], "--"))
+	if title == "" {
+		return Query{}, fmt.Errorf("missing title in first line")
+	}
+
+	// Parse description from second line (-- Description)
+	description := strings.TrimSpace(strings.TrimPrefix(lines[1], "--"))
+	if description == "" {
+		return Query{}, fmt.Errorf("missing description in second line")
+	}
+
+	// Join remaining lines as SQL (excluding comment lines)
+	var sqlLines []string
+	for i := 2; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line != "" && !strings.HasPrefix(line, "--") {
+			sqlLines = append(sqlLines, line)
+		}
+	}
+
+	if len(sqlLines) == 0 {
+		return Query{}, fmt.Errorf("no SQL content found")
+	}
+
+	sql := strings.Join(sqlLines, " ")
+
+	return Query{
+		Name:        title,
+		Description: description,
+		SQL:         sql,
+	}, nil
+}
+
 func createDefaultQueries(configPath string) error {
 	// Create directory if it doesn't exist
 	configDir := filepath.Dir(configPath)
@@ -42,7 +114,29 @@ func createDefaultQueries(configPath string) error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	defaultQueries := []Query{
+	// Create SQL directory and files instead of JSON by default
+	sqlDir := filepath.Join(configDir, "queries")
+	if err := os.MkdirAll(sqlDir, 0755); err != nil {
+		return fmt.Errorf("failed to create queries directory: %w", err)
+	}
+
+	// Create individual SQL files for each default query
+	defaultQueries := getDefaultQueries()
+	for _, query := range defaultQueries {
+		filename := strings.ToLower(strings.ReplaceAll(query.Name, " ", "_")) + ".sql"
+		content := fmt.Sprintf("-- %s\n-- %s\n%s", query.Name, query.Description, query.SQL)
+		
+		filePath := filepath.Join(sqlDir, filename)
+		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			return fmt.Errorf("failed to write query file %s: %w", filename, err)
+		}
+	}
+
+	return nil
+}
+
+func getDefaultQueries() []Query {
+	return []Query{
 		{
 			Name:        "Active",
 			Description: "Show current active connections",
@@ -79,17 +173,6 @@ func createDefaultQueries(configPath string) error {
 			SQL:         "SELECT name, setting, unit, category, short_desc FROM pg_settings ORDER BY category, name;",
 		},
 	}
-
-	data, err := json.MarshalIndent(defaultQueries, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal default queries: %w", err)
-	}
-
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write default queries: %w", err)
-	}
-
-	return nil
 }
 
 func (m *Model) runQuery(query Query) tea.Cmd {
