@@ -115,15 +115,11 @@ The tool comes with these pre-configured monitoring queries:
 
 To add your own monitoring queries:
 
-1. Edit `~/.pgi/queries.json`
-2. Add a new query object with:
-   - `name`: Display name for the query
-   - `description`: Brief description
-   - `sql`: The SQL query to execute
+1. Add queries to `~/.pgi/queries/`
+2. Queries are .sql files where the first line include a comment which is the query title
 3. Restart the application
 
 ## Requirements
 
 - Go 1.21+
-- PostgreSQL database
 - `~/.pg_service.conf` file with database connection details

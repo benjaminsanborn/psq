@@ -16,17 +16,35 @@ func main() {
 		Long:  `A TUI-based PostgreSQL monitoring tool that reads connection from ~/.pg_service.conf`,
 		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			// Use provided service name or default to "default"
+			// Use provided service name or show picker if none provided
 			if len(args) > 0 {
 				service = args[0]
-			} else if service == "" {
-				service = "default"
-			}
-
-			app := NewApp(service)
-			if err := app.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				app := NewApp(service)
+				if err := app.Run(); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+			} else if service != "" {
+				app := NewApp(service)
+				if err := app.Run(); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+			} else {
+				// Show service picker
+				picker := NewServicePicker()
+				selectedService, err := picker.Run()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				if selectedService != "" {
+					app := NewApp(selectedService)
+					if err := app.Run(); err != nil {
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						os.Exit(1)
+					}
+				}
 			}
 		},
 	}
