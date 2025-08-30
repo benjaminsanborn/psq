@@ -51,25 +51,6 @@ user=staging_user
 password=staging_password
 ```
 
-### Queries Configuration
-
-The tool automatically creates `~/.pgi/queries.json` on first run with default monitoring queries. You can edit this file to add, modify, or remove queries:
-
-```json
-[
-  {
-    "name": "Active Connections",
-    "description": "Show current active connections",
-    "sql": "SELECT pid, usename, application_name, client_addr, state, query_start, state_change FROM pg_stat_activity WHERE state IS NOT NULL ORDER BY query_start DESC;"
-  },
-  {
-    "name": "Custom Query",
-    "description": "Your custom monitoring query",
-    "sql": "SELECT * FROM your_table WHERE condition = 'value';"
-  }
-]
-```
-
 ## Usage
 
 Run the monitoring interface:
