@@ -190,7 +190,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd.Stdin = os.Stdin
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
-			
+
 			// Set PGPASSWORD environment variable
 			cmd.Env = append(os.Environ(), "PGPASSWORD="+config.Password)
 

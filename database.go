@@ -154,9 +154,9 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 			} else {
 				// Handle byte arrays (convert to string)
 				if bytes, ok := val.([]byte); ok {
-					row[i] = string(bytes)
+					row[i] = strings.ReplaceAll(string(bytes), "\n", " ")
 				} else {
-					row[i] = fmt.Sprintf("%v", val)
+					row[i] = strings.ReplaceAll(fmt.Sprintf("%v", val), "\n", " ")
 				}
 			}
 		}
