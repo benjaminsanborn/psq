@@ -213,21 +213,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				configDir := filepath.Join(os.ExpandEnv("$HOME"), ".pgi")
 				sqlDir := filepath.Join(configDir, "queries")
 
-				// Check if using SQL directory or JSON file
+				// Find the specific SQL file for the current query
 				var editPath string
-				if _, err := os.Stat(sqlDir); err == nil {
-					// Find the specific SQL file for the current query
-					currentQuery := m.queries[m.selected]
-					specificFile, err := findQueryFile(sqlDir, currentQuery)
-					if err == nil && specificFile != "" {
-						editPath = specificFile
-					} else {
-						// Fall back to opening the directory
-						editPath = sqlDir
-					}
+				currentQuery := m.queries[m.selected]
+				specificFile, err := findQueryFile(sqlDir, currentQuery)
+				if err == nil && specificFile != "" {
+					editPath = specificFile
 				} else {
-					// Edit the JSON file
-					editPath = filepath.Join(configDir, "queries.json")
+					// Fall back to opening the directory
+					editPath = sqlDir
 				}
 
 				editor := os.Getenv("EDITOR")
@@ -349,11 +343,14 @@ func (m *Model) updateContent() {
 	var content string
 
 	// Header section
-	content += lipgloss.NewStyle().
+	content += " " + lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("86")).
-		Padding(0, 1).
-		Render("pgi")
+		Render("pgi@") +
+		lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("196")).
+			Render(m.service)
 	if m.searchMode {
 		content += ": type to search queries, ↑/↓ to navigate, Enter to select, Esc to cancel\n"
 		content += "\nSearch: " + m.searchQuery + "█\n\n"
