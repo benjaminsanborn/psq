@@ -76,6 +76,31 @@ func getDBConfig(serviceName string) (*DBConfig, error) {
 	return config, nil
 }
 
+func listServices() ([]string, error) {
+	configPath := os.ExpandEnv("$HOME/.pg_service.conf")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read ~/.pg_service.conf: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var services []string
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			service := strings.Trim(line, "[]")
+			services = append(services, service)
+		}
+	}
+
+	return services, nil
+}
+
 func connectDB(serviceName string) (*sql.DB, error) {
 	config, err := getDBConfig(serviceName)
 	if err != nil {
