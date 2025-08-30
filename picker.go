@@ -15,14 +15,17 @@ type ServicePicker struct {
 }
 
 type PickerModel struct {
-	services  []string
-	selected  int
-	width     int
-	height    int
-	viewport  viewport.Model
-	ready     bool
-	err       string
+	services       []string
+	selected       int
+	width          int
+	height         int
+	viewport       viewport.Model
+	ready          bool
+	err            string
+	selectedService string
 }
+
+type serviceSelectedMsg string
 
 func NewServicePicker() *ServicePicker {
 	services, err := listServices()
@@ -46,12 +49,12 @@ func NewServicePicker() *ServicePicker {
 	}
 }
 
-func (sp *ServicePicker) Run() error {
+func (sp *ServicePicker) Run() (string, error) {
 	p := tea.NewProgram(sp.model, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		return fmt.Errorf("failed to run service picker: %w", err)
+		return "", fmt.Errorf("failed to run service picker: %w", err)
 	}
-	return nil
+	return sp.model.selectedService, nil
 }
 
 func (m *PickerModel) Init() tea.Cmd {
@@ -82,19 +85,9 @@ func (m *PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter", " ":
 			if len(m.services) > 0 {
-				// Start monitoring app with selected service
-				selectedService := m.services[m.selected]
-				return m, tea.Sequence(
-					tea.Quit,
-					func() tea.Msg {
-						app := NewApp(selectedService)
-						if err := app.Run(); err != nil {
-							fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-							os.Exit(1)
-						}
-						return nil
-					},
-				)
+				// Return selected service
+				m.selectedService = m.services[m.selected]
+				return m, tea.Quit
 			}
 
 		case "e":

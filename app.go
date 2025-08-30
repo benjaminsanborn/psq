@@ -145,7 +145,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.queries) > 0 {
 				configDir := filepath.Join(os.ExpandEnv("$HOME"), ".pgi")
 				sqlDir := filepath.Join(configDir, "queries")
-				
+
 				// Check if using SQL directory or JSON file
 				var editPath string
 				if _, err := os.Stat(sqlDir); err == nil {
@@ -155,7 +155,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Edit the JSON file
 					editPath = filepath.Join(configDir, "queries.json")
 				}
-				
+
 				editor := os.Getenv("EDITOR")
 				if editor == "" {
 					editor = "vi"

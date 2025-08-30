@@ -33,9 +33,17 @@ func main() {
 			} else {
 				// Show service picker
 				picker := NewServicePicker()
-				if err := picker.Run(); err != nil {
+				selectedService, err := picker.Run()
+				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
+				}
+				if selectedService != "" {
+					app := NewApp(selectedService)
+					if err := app.Run(); err != nil {
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						os.Exit(1)
+					}
 				}
 			}
 		},
