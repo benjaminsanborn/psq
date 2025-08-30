@@ -169,6 +169,37 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return nil
 				})
 			}
+		case "x":
+			// Open psql prompt for current service
+			config, err := getDBConfig(m.service)
+			if err != nil {
+				m.err = fmt.Sprintf("Failed to get DB config: %v", err)
+				m.updateContent()
+				return m, nil
+			}
+
+			// Build psql command with connection parameters
+			args := []string{
+				"-h", config.Host,
+				"-p", config.Port,
+				"-d", config.Database,
+				"-U", config.User,
+			}
+
+			cmd := exec.Command("psql", args...)
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			
+			// Set PGPASSWORD environment variable
+			cmd.Env = append(os.Environ(), "PGPASSWORD="+config.Password)
+
+			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+				if err != nil {
+					return queryErrorMsg(fmt.Sprintf("Failed to open psql: %v", err))
+				}
+				return nil
+			})
 		}
 
 		// Update content after any key press
@@ -237,7 +268,7 @@ func (m *Model) updateContent() {
 		Foreground(lipgloss.Color("86")).
 		Padding(0, 1).
 		Render("pgi")
-	content += ": ←/→ to select query, e to edit query, q to quit\n"
+	content += ": ←/→ to select query, e to edit query, x for psql prompt, q to quit\n"
 
 	// Query list
 	content += "\n "
