@@ -23,8 +23,15 @@ func loadQueries() ([]Query, error) {
 		return loadQueriesFromSQL(sqlDir)
 	}
 
-	// Fall back to JSON format
-	// Create default queries if file doesn't exist
+	// If SQL directory doesn't exist, copy from examples/queries
+	if _, err := os.Stat(sqlDir); os.IsNotExist(err) {
+		if err := copyQueriesFromExamples(sqlDir); err != nil {
+			return nil, err
+		}
+		return loadQueriesFromSQL(sqlDir)
+	}
+
+	// Fall back to JSON format for backward compatibility
 	if _, err := os.Stat(jsonPath); os.IsNotExist(err) {
 		if err := createDefaultQueries(jsonPath); err != nil {
 			return nil, err
@@ -60,6 +67,53 @@ func loadQueriesFromSQL(sqlDir string) ([]Query, error) {
 	}
 
 	return queries, nil
+}
+
+func copyQueriesFromExamples(targetDir string) error {
+	// Create target directory
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create queries directory: %w", err)
+	}
+
+	// Copy files from examples/queries to target directory
+	examplesDir := filepath.Join("examples", "queries")
+	files, err := filepath.Glob(filepath.Join(examplesDir, "*.sql"))
+	if err != nil || len(files) == 0 {
+		// If examples don't exist, create default queries as SQL files
+		return createDefaultQueriesAsSQL(targetDir)
+	}
+
+	for _, srcFile := range files {
+		filename := filepath.Base(srcFile)
+		dstFile := filepath.Join(targetDir, filename)
+
+		srcData, err := os.ReadFile(srcFile)
+		if err != nil {
+			return fmt.Errorf("failed to read example file %s: %w", srcFile, err)
+		}
+
+		if err := os.WriteFile(dstFile, srcData, 0644); err != nil {
+			return fmt.Errorf("failed to copy query file %s: %w", filename, err)
+		}
+	}
+
+	return nil
+}
+
+func createDefaultQueriesAsSQL(targetDir string) error {
+	// Create individual SQL files for each default query
+	defaultQueries := getDefaultQueries()
+	for _, query := range defaultQueries {
+		filename := strings.ToLower(strings.ReplaceAll(query.Name, " ", "_")) + ".sql"
+		content := fmt.Sprintf("-- %s\n-- %s\n%s", query.Name, query.Description, query.SQL)
+
+		filePath := filepath.Join(targetDir, filename)
+		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			return fmt.Errorf("failed to write query file %s: %w", filename, err)
+		}
+	}
+
+	return nil
 }
 
 func loadQueryFromSQLFile(filename string) (Query, error) {
@@ -107,6 +161,27 @@ func loadQueryFromSQLFile(filename string) (Query, error) {
 	}, nil
 }
 
+func findQueryFile(sqlDir string, targetQuery Query) (string, error) {
+	files, err := filepath.Glob(filepath.Join(sqlDir, "*.sql"))
+	if err != nil {
+		return "", err
+	}
+
+	for _, file := range files {
+		query, err := loadQueryFromSQLFile(file)
+		if err != nil {
+			continue // Skip files that can't be parsed
+		}
+
+		// Match by name and SQL content
+		if query.Name == targetQuery.Name && query.SQL == targetQuery.SQL {
+			return file, nil
+		}
+	}
+
+	return "", fmt.Errorf("query file not found")
+}
+
 func createDefaultQueries(configPath string) error {
 	// Create directory if it doesn't exist
 	configDir := filepath.Dir(configPath)
@@ -125,7 +200,7 @@ func createDefaultQueries(configPath string) error {
 	for _, query := range defaultQueries {
 		filename := strings.ToLower(strings.ReplaceAll(query.Name, " ", "_")) + ".sql"
 		content := fmt.Sprintf("-- %s\n-- %s\n%s", query.Name, query.Description, query.SQL)
-		
+
 		filePath := filepath.Join(sqlDir, filename)
 		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 			return fmt.Errorf("failed to write query file %s: %w", filename, err)

@@ -34,18 +34,21 @@ func (a *App) Run() error {
 }
 
 type Model struct {
-	queries       []Query
-	selected      int
-	results       string
-	loading       bool
-	err           string
-	width         int
-	height        int
-	service       string
-	lastQuery     Query
-	viewport      viewport.Model
-	ready         bool
-	lastRefreshAt time.Time
+	queries         []Query
+	selected        int
+	results         string
+	loading         bool
+	err             string
+	width           int
+	height          int
+	service         string
+	lastQuery       Query
+	viewport        viewport.Model
+	ready           bool
+	lastRefreshAt   time.Time
+	searchMode      bool
+	searchQuery     string
+	filteredQueries []Query
 }
 
 type Query struct {
@@ -69,11 +72,14 @@ func NewModel(service string) *Model {
 	}
 
 	return &Model{
-		queries:  queries,
-		selected: 0,
-		results:  "Select a query to run...",
-		service:  service,
-		ready:    false,
+		queries:         queries,
+		selected:        0,
+		results:         "Select a query to run...",
+		service:         service,
+		ready:           false,
+		searchMode:      false,
+		searchQuery:     "",
+		filteredQueries: queries,
 	}
 }
 
@@ -90,9 +96,72 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Handle search mode
+		if m.searchMode {
+			switch msg.String() {
+			case "escape":
+				m.searchMode = false
+				m.searchQuery = ""
+				m.filteredQueries = m.queries
+				m.selected = 0
+				m.updateContent()
+				return m, nil
+			case "enter":
+				if len(m.filteredQueries) > 0 {
+					m.searchMode = false
+					selectedQuery := m.filteredQueries[m.selected]
+					// Find index in original queries
+					for i, q := range m.queries {
+						if q.Name == selectedQuery.Name && q.SQL == selectedQuery.SQL {
+							m.selected = i
+							break
+						}
+					}
+					m.loading = true
+					m.err = ""
+					m.results = ""
+					m.lastQuery = selectedQuery
+					m.updateContent()
+					return m, m.runQuery(selectedQuery)
+				}
+			case "up", "ctrl+k":
+				if m.selected > 0 {
+					m.selected--
+					m.updateContent()
+				}
+			case "down", "ctrl+j":
+				if m.selected < len(m.filteredQueries)-1 {
+					m.selected++
+					m.updateContent()
+				}
+			case "backspace", "ctrl+h":
+				if len(m.searchQuery) > 0 {
+					m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+					m.filterQueries()
+					m.updateContent()
+				}
+			default:
+				if len(msg.String()) == 1 {
+					m.searchQuery += msg.String()
+					m.filterQueries()
+					m.updateContent()
+				}
+			}
+			return m, nil
+		}
+
+		// Normal mode
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+
+		case "s":
+			m.searchMode = true
+			m.searchQuery = ""
+			m.filteredQueries = m.queries
+			m.selected = 0
+			m.updateContent()
+			return m, nil
 
 		// Query selection
 		case "left", "h":
@@ -102,7 +171,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.err = ""
 				m.results = ""
 				m.lastQuery = m.queries[m.selected]
-				m.lastRefreshAt = time.Now()
 				// Update display immediately
 				return m, m.runQuery(m.queries[m.selected])
 			}
@@ -113,7 +181,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.err = ""
 				m.results = ""
 				m.lastQuery = m.queries[m.selected]
-				m.lastRefreshAt = time.Now()
 				// Update display immediately
 				m.updateContent()
 				return m, m.runQuery(m.queries[m.selected])
@@ -149,8 +216,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Check if using SQL directory or JSON file
 				var editPath string
 				if _, err := os.Stat(sqlDir); err == nil {
-					// Edit the queries directory
-					editPath = sqlDir
+					// Find the specific SQL file for the current query
+					currentQuery := m.queries[m.selected]
+					specificFile, err := findQueryFile(sqlDir, currentQuery)
+					if err == nil && specificFile != "" {
+						editPath = specificFile
+					} else {
+						// Fall back to opening the directory
+						editPath = sqlDir
+					}
 				} else {
 					// Edit the JSON file
 					editPath = filepath.Join(configDir, "queries.json")
@@ -280,21 +354,43 @@ func (m *Model) updateContent() {
 		Foreground(lipgloss.Color("86")).
 		Padding(0, 1).
 		Render("pgi")
-	content += ": ←/→ to select query, e to edit query, x for psql prompt, q to quit\n"
+	if m.searchMode {
+		content += ": type to search queries, ↑/↓ to navigate, Enter to select, Esc to cancel\n"
+		content += "\nSearch: " + m.searchQuery + "█\n\n"
 
-	// Query list
-	content += "\n "
-	for i, query := range m.queries {
-		if i == m.selected {
-			content += lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("86")).
-				Render(query.Name)
+		// Display filtered queries
+		if len(m.filteredQueries) == 0 {
+			content += "No queries match your search"
 		} else {
-			content += query.Name
+			for i, query := range m.filteredQueries {
+				if i == m.selected {
+					content += lipgloss.NewStyle().
+						Bold(true).
+						Foreground(lipgloss.Color("86")).
+						Render("▶ " + query.Name + " - " + query.Description)
+				} else {
+					content += "  " + query.Name + " - " + query.Description
+				}
+				content += "\n"
+			}
 		}
-		if i < len(m.queries)-1 {
-			content += " | "
+	} else {
+		content += ": ←/→ to select query, s to search, e to edit query, x for psql prompt, q to quit\n"
+
+		// Query list
+		content += "\n "
+		for i, query := range m.queries {
+			if i == m.selected {
+				content += lipgloss.NewStyle().
+					Bold(true).
+					Foreground(lipgloss.Color("86")).
+					Render(query.Name)
+			} else {
+				content += query.Name
+			}
+			if i < len(m.queries)-1 {
+				content += " | "
+			}
 		}
 	}
 	content += "\n" + lipgloss.NewStyle().
@@ -313,6 +409,30 @@ func (m *Model) updateContent() {
 
 func (m *Model) canRefresh() bool {
 	return time.Since(m.lastRefreshAt) >= 500*time.Millisecond
+}
+
+func (m *Model) filterQueries() {
+	if m.searchQuery == "" {
+		m.filteredQueries = m.queries
+		return
+	}
+
+	var filtered []Query
+	searchLower := strings.ToLower(m.searchQuery)
+
+	for _, query := range m.queries {
+		if strings.Contains(strings.ToLower(query.Name), searchLower) ||
+			strings.Contains(strings.ToLower(query.Description), searchLower) {
+			filtered = append(filtered, query)
+		}
+	}
+
+	m.filteredQueries = filtered
+
+	// Reset selection if out of bounds
+	if m.selected >= len(m.filteredQueries) {
+		m.selected = 0
+	}
 }
 
 func (m *Model) View() string {

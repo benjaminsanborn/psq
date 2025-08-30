@@ -15,17 +15,15 @@ type ServicePicker struct {
 }
 
 type PickerModel struct {
-	services       []string
-	selected       int
-	width          int
-	height         int
-	viewport       viewport.Model
-	ready          bool
-	err            string
+	services        []string
+	selected        int
+	width           int
+	height          int
+	viewport        viewport.Model
+	ready           bool
+	err             string
 	selectedService string
 }
-
-type serviceSelectedMsg string
 
 func NewServicePicker() *ServicePicker {
 	services, err := listServices()
