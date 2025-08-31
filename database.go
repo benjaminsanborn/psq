@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/evertras/bubble-table/table"
 	_ "github.com/lib/pq"
 )
 
@@ -134,8 +135,14 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 		return "", fmt.Errorf("failed to get columns: %w", err)
 	}
 
-	// First pass: collect all data to determine column widths
-	var allRows [][]string
+	// Create table columns
+	var tableColumns []table.Column
+	for _, col := range columns {
+		tableColumns = append(tableColumns, table.NewColumn(col, col, 15).WithFiltered(true))
+	}
+
+	// Collect data and create table rows
+	var tableRows []table.Row
 	values := make([]interface{}, len(columns))
 	valuePtrs := make([]interface{}, len(columns))
 	for i := range values {
@@ -147,114 +154,49 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 			return "", fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		row := make([]string, len(columns))
+		rowData := table.RowData{}
 		for i, val := range values {
+			var cellValue string
 			if val == nil {
-				row[i] = "NULL"
+				cellValue = "NULL"
 			} else {
 				// Handle byte arrays (convert to string)
 				if bytes, ok := val.([]byte); ok {
-					row[i] = strings.ReplaceAll(string(bytes), "\n", " ")
+					cellValue = strings.ReplaceAll(string(bytes), "\n", " ")
 				} else {
-					row[i] = strings.ReplaceAll(fmt.Sprintf("%v", val), "\n", " ")
+					cellValue = strings.ReplaceAll(fmt.Sprintf("%v", val), "\n", " ")
 				}
 			}
+			rowData[columns[i]] = cellValue
 		}
-		allRows = append(allRows, row)
+		tableRows = append(tableRows, table.NewRow(rowData))
 	}
 
 	if err := rows.Err(); err != nil {
 		return "", fmt.Errorf("error iterating rows: %w", err)
 	}
 
-	// Calculate column widths
-	colWidths := make([]int, len(columns))
-	for i, col := range columns {
-		colWidths[i] = len(col) + 1
-	}
+	// Define styles with nice colors
+	baseStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7C3AED")).
+		Foreground(lipgloss.Color("#E5E7EB"))
 
-	for _, row := range allRows {
-		for i, cell := range row {
-			if len(cell) > colWidths[i] {
-				colWidths[i] = len(cell)
-			}
-		}
-	}
-
-	// Define styles
 	headerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FAFAFA")).
-		Background(lipgloss.Color("#7D56F4")).
-		Bold(true)
+		Foreground(lipgloss.Color("#FFFFFF")).
+		Background(lipgloss.Color("#7C3AED")).
+		Bold(true).
+		Padding(0, 1)
 
-	borderStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#626262"))
+	// Create and configure the bubble table with colors
+	t := table.New(tableColumns).
+		WithRows(tableRows).
+		WithBaseStyle(baseStyle).
+		HeaderStyle(headerStyle).
+		WithMissingDataIndicator(lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6B7280")).
+			Italic(true).
+			Render("NULL"))
 
-	rowStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#E5E5E5"))
-
-	altRowStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#CCCCCC"))
-
-	// Build the formatted table
-	var result strings.Builder
-
-	// Write header border
-	result.WriteString(borderStyle.Render(" ┌"))
-	for i := range columns {
-		if i > 0 {
-			result.WriteString(borderStyle.Render("┬"))
-		}
-		result.WriteString(borderStyle.Render(strings.Repeat("─", colWidths[i])))
-	}
-	result.WriteString(borderStyle.Render("┐\n"))
-
-	// Write column names
-	result.WriteString(borderStyle.Render("│"))
-	for i, col := range columns {
-		result.WriteString(headerStyle.Render(fmt.Sprintf("%-*s", colWidths[i], col)))
-		if i < len(columns)-1 {
-			result.WriteString(borderStyle.Render("│"))
-		}
-	}
-	result.WriteString(borderStyle.Render("│\n"))
-
-	// Write separator
-	result.WriteString(borderStyle.Render("├"))
-	for i := range columns {
-		if i > 0 {
-			result.WriteString(borderStyle.Render("┼"))
-		}
-		result.WriteString(borderStyle.Render(strings.Repeat("─", colWidths[i])))
-	}
-	result.WriteString(borderStyle.Render("┤\n"))
-
-	// Write data rows
-	for rowIndex, row := range allRows {
-		result.WriteString(borderStyle.Render("│"))
-		for i, cell := range row {
-			// Alternate row colors
-			if rowIndex%2 == 0 {
-				result.WriteString(rowStyle.Render(fmt.Sprintf("%-*s", colWidths[i], cell)))
-			} else {
-				result.WriteString(altRowStyle.Render(fmt.Sprintf("%-*s", colWidths[i], cell)))
-			}
-			if i < len(row)-1 {
-				result.WriteString(borderStyle.Render("│"))
-			}
-		}
-		result.WriteString(borderStyle.Render("│\n"))
-	}
-
-	// Write bottom border
-	result.WriteString(borderStyle.Render("└"))
-	for i := range columns {
-		if i > 0 {
-			result.WriteString(borderStyle.Render("┴"))
-		}
-		result.WriteString(borderStyle.Render(strings.Repeat("─", colWidths[i])))
-	}
-	result.WriteString(borderStyle.Render("┘\n"))
-
-	return result.String(), nil
+	return t.View(), nil
 }
