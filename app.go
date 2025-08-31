@@ -210,7 +210,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "e":
 			if len(m.queries) > 0 {
-				configDir := filepath.Join(os.ExpandEnv("$HOME"), ".pgi")
+				configDir := filepath.Join(os.ExpandEnv("$HOME"), ".psqi")
 				sqlDir := filepath.Join(configDir, "queries")
 
 				// Find the specific SQL file for the current query
@@ -346,7 +346,7 @@ func (m *Model) updateContent() {
 	content += " " + lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("86")).
-		Render("pgi@") +
+		Render("psqi@") +
 		lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("196")).

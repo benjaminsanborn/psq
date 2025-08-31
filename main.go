@@ -11,7 +11,7 @@ func main() {
 	var service string
 
 	var rootCmd = &cobra.Command{
-		Use:   "pgi [service]",
+		Use:   "psqi [service]",
 		Short: "PostgreSQL monitoring CLI tool",
 		Long:  `A TUI-based PostgreSQL monitoring tool that reads connection from ~/.pg_service.conf`,
 		Args:  cobra.MaximumNArgs(1),

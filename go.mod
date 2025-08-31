@@ -1,4 +1,4 @@
-module pgi
+module psqi
 
 go 1.23.0
 

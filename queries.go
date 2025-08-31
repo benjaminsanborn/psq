@@ -13,7 +13,7 @@ type queryResultMsg string
 type queryErrorMsg string
 
 func loadQueries() ([]Query, error) {
-	configDir := filepath.Join(os.ExpandEnv("$HOME"), ".pgi")
+	configDir := filepath.Join(os.ExpandEnv("$HOME"), ".psqi")
 	sqlDir := filepath.Join(configDir, "queries")
 
 	// Check if SQL directory exists and has files
