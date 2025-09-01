@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -36,6 +37,8 @@ func (a *App) Run() error {
 
 type Model struct {
 	queries         []Query
+	allQueries      []Query        // includes hidden queries for search
+	tempQueries     map[string]int // temporary order positions for hidden queries
 	selected        int
 	results         string
 	loading         bool
@@ -54,14 +57,16 @@ type Model struct {
 	editQuery       Query
 	nameInput       textinput.Model
 	descInput       textinput.Model
+	orderInput      textinput.Model
 	sqlTextarea     textarea.Model
-	editFocus       int // 0=name, 1=description, 2=sql
+	editFocus       int // 0=name, 1=description, 2=order, 3=sql
 }
 
 type Query struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	SQL         string `json:"sql"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	SQL           string `json:"sql"`
+	OrderPosition *int   `json:"order_position,omitempty"` // nil means hidden from top bar
 }
 
 type tickMsg time.Time
@@ -70,16 +75,28 @@ func NewModel(service string) *Model {
 	queries, err := loadQueries()
 	if err != nil {
 		return &Model{
-			queries:  []Query{},
-			selected: 0,
-			err:      fmt.Sprintf("Failed to load queries: %v", err),
-			service:  service,
-			ready:    false,
+			queries:     []Query{},
+			allQueries:  []Query{},
+			tempQueries: make(map[string]int),
+			selected:    0,
+			err:         fmt.Sprintf("Failed to load queries: %v", err),
+			service:     service,
+			ready:       false,
+		}
+	}
+
+	// Also load all queries (including hidden ones) for search
+	allQueries := queries
+	if globalQueryDB != nil {
+		if allQueriesFromDB, err := globalQueryDB.LoadAllQueries(); err == nil {
+			allQueries = allQueriesFromDB
 		}
 	}
 
 	return &Model{
 		queries:         queries,
+		allQueries:      allQueries,
+		tempQueries:     make(map[string]int),
 		selected:        0,
 		results:         "Select a query to run...",
 		service:         service,
@@ -92,9 +109,44 @@ func NewModel(service string) *Model {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+func (m *Model) getNextTempOrder() int {
+	maxOrder := 0
+	for _, q := range m.queries {
+		if q.OrderPosition != nil && *q.OrderPosition > maxOrder {
+			maxOrder = *q.OrderPosition
+		}
+	}
+	for _, tempOrder := range m.tempQueries {
+		if tempOrder > maxOrder {
+			maxOrder = tempOrder
+		}
+	}
+	return maxOrder + 1
+}
+
+func (m *Model) addTemporaryQuery(query Query) {
+	if query.OrderPosition == nil {
+		// Assign temporary order position
+		tempOrder := m.getNextTempOrder()
+		m.tempQueries[query.Name] = tempOrder
+
+		// Create a copy with temporary order
+		tempQuery := query
+		tempQuery.OrderPosition = &tempOrder
+
+		// Add to visible queries
+		m.queries = append(m.queries, tempQuery)
+	}
+}
+
+func (m *Model) isTemporaryQuery(queryName string) bool {
+	_, exists := m.tempQueries[queryName]
+	return exists
 }
 
 func (m *Model) initEditor(query Query) {
@@ -111,6 +163,15 @@ func (m *Model) initEditor(query Query) {
 	m.descInput.SetValue(query.Description)
 	m.descInput.CharLimit = 100
 	m.descInput.Width = 50
+
+	// Initialize order input
+	m.orderInput = textinput.New()
+	m.orderInput.Placeholder = "Order position (empty to hide)"
+	if query.OrderPosition != nil {
+		m.orderInput.SetValue(fmt.Sprintf("%d", *query.OrderPosition))
+	}
+	m.orderInput.CharLimit = 10
+	m.orderInput.Width = 30
 
 	// Initialize SQL textarea
 	m.sqlTextarea = textarea.New()
@@ -146,17 +207,36 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					SQL:         m.sqlTextarea.Value(),
 				}
 
+				// Parse order position (but don't save temporary ones)
+				if orderStr := strings.TrimSpace(m.orderInput.Value()); orderStr != "" {
+					var pos int
+					if n, err := fmt.Sscanf(orderStr, "%d", &pos); err == nil && n == 1 {
+						// Only set if it's not a temporary position or user changed it
+						if !m.isTemporaryQuery(m.editQuery.Name) || orderStr != fmt.Sprintf("%d", m.tempQueries[m.editQuery.Name]) {
+							newQuery.OrderPosition = &pos
+						}
+					}
+				}
+
 				if globalQueryDB != nil {
 					if err := globalQueryDB.SaveQuery(newQuery); err != nil {
 						m.err = fmt.Sprintf("Failed to save query: %v", err)
+						m.updateContent()
+						return m, nil
 					} else {
 						// Reload queries
 						queries, err := loadQueries()
 						if err != nil {
 							m.err = fmt.Sprintf("Failed to reload queries: %v", err)
+							m.updateContent()
+							return m, nil
 						} else {
 							m.queries = queries
-							// Find the updated query in the list
+							// Also reload all queries for search
+							if allQueries, err := globalQueryDB.LoadAllQueries(); err == nil {
+								m.allQueries = allQueries
+							}
+							// Find the updated/new query in the list
 							for i, q := range queries {
 								if q.Name == newQuery.Name {
 									m.selected = i
@@ -165,21 +245,28 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 						m.editMode = false
+						m.loading = true
+						m.err = ""
+						m.lastQuery = newQuery
+						m.updateContent()
+						// Execute the updated query
+						return m, m.runQuery(newQuery)
 					}
 				}
 				m.updateContent()
 				return m, nil
 			case "tab", "shift+tab":
-				// Cycle through inputs
+				// Cycle through inputs (4 total: name, description, order, sql)
 				if msg.String() == "tab" {
-					m.editFocus = (m.editFocus + 1) % 3
+					m.editFocus = (m.editFocus + 1) % 4
 				} else {
-					m.editFocus = (m.editFocus + 2) % 3
+					m.editFocus = (m.editFocus + 3) % 4
 				}
 
 				// Update focus
 				m.nameInput.Blur()
 				m.descInput.Blur()
+				m.orderInput.Blur()
 				m.sqlTextarea.Blur()
 
 				switch m.editFocus {
@@ -188,6 +275,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case 1:
 					m.descInput.Focus()
 				case 2:
+					m.orderInput.Focus()
+				case 3:
 					m.sqlTextarea.Focus()
 				}
 				m.updateContent()
@@ -201,6 +290,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case 1:
 					m.descInput, cmd = m.descInput.Update(msg)
 				case 2:
+					m.orderInput, cmd = m.orderInput.Update(msg)
+				case 3:
 					m.sqlTextarea, cmd = m.sqlTextarea.Update(msg)
 				}
 				m.updateContent()
@@ -214,7 +305,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "escape":
 				m.searchMode = false
 				m.searchQuery = ""
-				m.filteredQueries = m.queries
+				m.filteredQueries = m.queries // Back to visible queries only
 				m.selected = 0
 				m.updateContent()
 				return m, nil
@@ -222,7 +313,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.filteredQueries) > 0 {
 					m.searchMode = false
 					selectedQuery := m.filteredQueries[m.selected]
-					// Find index in original queries
+
+					// If this is a hidden query, add it temporarily
+					m.addTemporaryQuery(selectedQuery)
+
+					// Find index in current queries (including temporary ones)
 					for i, q := range m.queries {
 						if q.Name == selectedQuery.Name && q.SQL == selectedQuery.SQL {
 							m.selected = i
@@ -270,7 +365,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "s":
 			m.searchMode = true
 			m.searchQuery = ""
-			m.filteredQueries = m.queries
+			m.filteredQueries = m.allQueries // Use all queries for search
 			m.selected = 0
 			m.updateContent()
 			return m, nil
@@ -325,6 +420,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.editMode = true
 				m.editQuery = m.queries[m.selected]
 				m.initEditor(m.editQuery)
+				m.updateContent()
+				return m, nil
+			}
+		case "n":
+			// Create new query
+			m.editMode = true
+			m.editQuery = Query{} // Empty query
+			m.initEditor(m.editQuery)
+			m.updateContent()
+			return m, nil
+		case "d":
+			// Dump current queries to default file
+			if globalQueryDB != nil {
+				configDir := os.ExpandEnv("$HOME/.psqi")
+				defaultDumpFile := filepath.Join(configDir, "default_queries.db")
+
+				if err := globalQueryDB.DumpToFile(defaultDumpFile); err != nil {
+					m.err = fmt.Sprintf("Failed to dump queries: %v", err)
+				} else {
+					m.err = fmt.Sprintf("Queries dumped to: %s", defaultDumpFile)
+				}
 				m.updateContent()
 				return m, nil
 			}
@@ -428,7 +544,7 @@ func (m *Model) updateContent() {
 		Render("psqi@") +
 		lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("196")).
+			Foreground(lipgloss.Color("201")).
 			Render(m.service)
 	if m.searchMode {
 		content += ": type to search queries, ↑/↓ to navigate, Enter to select, Esc to cancel\n"
@@ -454,10 +570,14 @@ func (m *Model) updateContent() {
 		content += ": Tab to switch fields, Ctrl+S to save, Esc to cancel\n\n"
 
 		// Query editor
+		editorTitle := "Edit Query"
+		if m.editQuery.Name == "" {
+			editorTitle = "Create New Query"
+		}
 		content += lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("86")).
-			Render("Edit Query") + "\n\n"
+			Render(editorTitle) + "\n\n"
 
 		// Name input
 		nameStyle := lipgloss.NewStyle()
@@ -475,26 +595,46 @@ func (m *Model) updateContent() {
 		}
 		content += "Description:\n" + descStyle.Render(m.descInput.View()) + "\n\n"
 
+		// Order input
+		orderStyle := lipgloss.NewStyle()
+		if m.editFocus == 2 {
+			orderStyle = orderStyle.BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("86"))
+		}
+		content += "Order Position (empty to hide from tabs):\n" + orderStyle.Render(m.orderInput.View()) + "\n\n"
+
 		// SQL textarea
 		sqlStyle := lipgloss.NewStyle()
-		if m.editFocus == 2 {
+		if m.editFocus == 3 {
 			sqlStyle = sqlStyle.BorderStyle(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("86"))
 		}
 		content += "SQL:\n" + sqlStyle.Render(m.sqlTextarea.View()) + "\n"
 	} else {
-		content += ": ←/→ to select query, s to search, e to edit query, x for psql prompt, q to quit\n"
+		content += ": ←/→ to select query, s to search, e to edit query, n to create new query, d to dump queries, x for psql prompt, q to quit\n"
 
 		// Query list
 		content += "\n "
 		for i, query := range m.queries {
 			if i == m.selected {
-				content += lipgloss.NewStyle().
+				style := lipgloss.NewStyle().
 					Bold(true).
-					Foreground(lipgloss.Color("86")).
-					Render(query.Name)
+					Foreground(lipgloss.Color("86"))
+
+				// Add italics for temporary queries
+				if m.isTemporaryQuery(query.Name) {
+					style = style.Italic(true)
+				}
+
+				content += style.Render(query.Name)
 			} else {
-				content += query.Name
+				if m.isTemporaryQuery(query.Name) {
+					content += lipgloss.NewStyle().
+						Italic(true).
+						Render(query.Name)
+				} else {
+					content += query.Name
+				}
 			}
 			if i < len(m.queries)-1 {
 				content += " | "
@@ -521,14 +661,14 @@ func (m *Model) canRefresh() bool {
 
 func (m *Model) filterQueries() {
 	if m.searchQuery == "" {
-		m.filteredQueries = m.queries
+		m.filteredQueries = m.allQueries // Show all queries when no search
 		return
 	}
 
 	var filtered []Query
 	searchLower := strings.ToLower(m.searchQuery)
 
-	for _, query := range m.queries {
+	for _, query := range m.allQueries { // Search through all queries
 		if strings.Contains(strings.ToLower(query.Name), searchLower) ||
 			strings.Contains(strings.ToLower(query.Description), searchLower) {
 			filtered = append(filtered, query)
