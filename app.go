@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -49,6 +50,12 @@ type Model struct {
 	searchMode      bool
 	searchQuery     string
 	filteredQueries []Query
+	editMode        bool
+	editQuery       Query
+	nameInput       textinput.Model
+	descInput       textinput.Model
+	sqlTextarea     textarea.Model
+	editFocus       int // 0=name, 1=description, 2=sql
 }
 
 type Query struct {
@@ -80,6 +87,7 @@ func NewModel(service string) *Model {
 		searchMode:      false,
 		searchQuery:     "",
 		filteredQueries: queries,
+		editMode:        false,
 	}
 }
 
@@ -89,11 +97,115 @@ func (m *Model) Init() tea.Cmd {
 	})
 }
 
+func (m *Model) initEditor(query Query) {
+	// Initialize name input
+	m.nameInput = textinput.New()
+	m.nameInput.Placeholder = "Query name"
+	m.nameInput.SetValue(query.Name)
+	m.nameInput.CharLimit = 50
+	m.nameInput.Width = 50
+
+	// Initialize description input
+	m.descInput = textinput.New()
+	m.descInput.Placeholder = "Query description"
+	m.descInput.SetValue(query.Description)
+	m.descInput.CharLimit = 100
+	m.descInput.Width = 50
+
+	// Initialize SQL textarea
+	m.sqlTextarea = textarea.New()
+	m.sqlTextarea.Placeholder = "Enter your SQL query here..."
+	m.sqlTextarea.SetValue(query.SQL)
+	m.sqlTextarea.SetWidth(80)
+	m.sqlTextarea.SetHeight(10)
+
+	// Focus on the first input
+	m.editFocus = 0
+	m.nameInput.Focus()
+}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if !m.ready {
 			return m, nil
+		}
+
+		// Handle edit mode
+		if m.editMode {
+			switch msg.String() {
+			case "ctrl+c", "escape":
+				m.editMode = false
+				m.updateContent()
+				return m, nil
+			case "ctrl+s":
+				// Save the query
+				newQuery := Query{
+					Name:        m.nameInput.Value(),
+					Description: m.descInput.Value(),
+					SQL:         m.sqlTextarea.Value(),
+				}
+
+				if globalQueryDB != nil {
+					if err := globalQueryDB.SaveQuery(newQuery); err != nil {
+						m.err = fmt.Sprintf("Failed to save query: %v", err)
+					} else {
+						// Reload queries
+						queries, err := loadQueries()
+						if err != nil {
+							m.err = fmt.Sprintf("Failed to reload queries: %v", err)
+						} else {
+							m.queries = queries
+							// Find the updated query in the list
+							for i, q := range queries {
+								if q.Name == newQuery.Name {
+									m.selected = i
+									break
+								}
+							}
+						}
+						m.editMode = false
+					}
+				}
+				m.updateContent()
+				return m, nil
+			case "tab", "shift+tab":
+				// Cycle through inputs
+				if msg.String() == "tab" {
+					m.editFocus = (m.editFocus + 1) % 3
+				} else {
+					m.editFocus = (m.editFocus + 2) % 3
+				}
+
+				// Update focus
+				m.nameInput.Blur()
+				m.descInput.Blur()
+				m.sqlTextarea.Blur()
+
+				switch m.editFocus {
+				case 0:
+					m.nameInput.Focus()
+				case 1:
+					m.descInput.Focus()
+				case 2:
+					m.sqlTextarea.Focus()
+				}
+				m.updateContent()
+				return m, nil
+			default:
+				// Update the focused input
+				var cmd tea.Cmd
+				switch m.editFocus {
+				case 0:
+					m.nameInput, cmd = m.nameInput.Update(msg)
+				case 1:
+					m.descInput, cmd = m.descInput.Update(msg)
+				case 2:
+					m.sqlTextarea, cmd = m.sqlTextarea.Update(msg)
+				}
+				m.updateContent()
+				return m, cmd
+			}
 		}
 
 		// Handle search mode
@@ -210,44 +322,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "e":
 			if len(m.queries) > 0 {
-				configDir := filepath.Join(os.ExpandEnv("$HOME"), ".psqi")
-				sqlDir := filepath.Join(configDir, "queries")
-
-				// Find the specific SQL file for the current query
-				var editPath string
-				currentQuery := m.queries[m.selected]
-				specificFile, err := findQueryFile(sqlDir, currentQuery)
-				if err == nil && specificFile != "" {
-					editPath = specificFile
-				} else {
-					// Fall back to opening the directory
-					editPath = sqlDir
-				}
-
-				editor := os.Getenv("EDITOR")
-				if editor == "" {
-					editor = "vi"
-				}
-				cmd := exec.Command(editor, editPath)
-				cmd.Stdin = os.Stdin
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
-
-				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-					if err != nil {
-						return queryErrorMsg(fmt.Sprintf("Failed to edit query: %v", err))
-					}
-					// Reload queries
-					queries, err := loadQueries()
-					if err != nil {
-						return queryErrorMsg(fmt.Sprintf("Failed to reload queries: %v", err))
-					}
-					m.queries = queries
-					if m.selected >= len(queries) {
-						m.selected = len(queries) - 1
-					}
-					return nil
-				})
+				m.editMode = true
+				m.editQuery = m.queries[m.selected]
+				m.initEditor(m.editQuery)
+				m.updateContent()
+				return m, nil
 			}
 		case "x":
 			// Open psql prompt for current service
@@ -371,6 +450,38 @@ func (m *Model) updateContent() {
 				content += "\n"
 			}
 		}
+	} else if m.editMode {
+		content += ": Tab to switch fields, Ctrl+S to save, Esc to cancel\n\n"
+
+		// Query editor
+		content += lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("86")).
+			Render("Edit Query") + "\n\n"
+
+		// Name input
+		nameStyle := lipgloss.NewStyle()
+		if m.editFocus == 0 {
+			nameStyle = nameStyle.BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("86"))
+		}
+		content += "Name:\n" + nameStyle.Render(m.nameInput.View()) + "\n\n"
+
+		// Description input
+		descStyle := lipgloss.NewStyle()
+		if m.editFocus == 1 {
+			descStyle = descStyle.BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("86"))
+		}
+		content += "Description:\n" + descStyle.Render(m.descInput.View()) + "\n\n"
+
+		// SQL textarea
+		sqlStyle := lipgloss.NewStyle()
+		if m.editFocus == 2 {
+			sqlStyle = sqlStyle.BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("86"))
+		}
+		content += "SQL:\n" + sqlStyle.Render(m.sqlTextarea.View()) + "\n"
 	} else {
 		content += ": ←/→ to select query, s to search, e to edit query, x for psql prompt, q to quit\n"
 

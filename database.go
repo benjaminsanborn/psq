@@ -135,14 +135,8 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 		return "", fmt.Errorf("failed to get columns: %w", err)
 	}
 
-	// Create table columns
-	var tableColumns []table.Column
-	for _, col := range columns {
-		tableColumns = append(tableColumns, table.NewColumn(col, col, 15).WithFiltered(true))
-	}
-
-	// Collect data and create table rows
-	var tableRows []table.Row
+	// First pass: collect all data to calculate column widths
+	var allRows [][]string
 	values := make([]interface{}, len(columns))
 	valuePtrs := make([]interface{}, len(columns))
 	for i := range values {
@@ -154,19 +148,55 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 			return "", fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		rowData := table.RowData{}
+		row := make([]string, len(columns))
 		for i, val := range values {
-			var cellValue string
 			if val == nil {
-				cellValue = "NULL"
+				row[i] = "NULL"
 			} else {
 				// Handle byte arrays (convert to string)
 				if bytes, ok := val.([]byte); ok {
-					cellValue = strings.ReplaceAll(string(bytes), "\n", " ")
+					row[i] = strings.ReplaceAll(string(bytes), "\n", " ")
 				} else {
-					cellValue = strings.ReplaceAll(fmt.Sprintf("%v", val), "\n", " ")
+					row[i] = strings.ReplaceAll(fmt.Sprintf("%v", val), "\n", " ")
 				}
 			}
+		}
+		allRows = append(allRows, row)
+	}
+
+	// Calculate optimal column widths
+	colWidths := make([]int, len(columns))
+	for i, col := range columns {
+		colWidths[i] = len(col) + 2 // Start with header width + padding
+	}
+
+	for _, row := range allRows {
+		for i, cell := range row {
+			if len(cell)+2 > colWidths[i] {
+				colWidths[i] = len(cell) + 2
+			}
+		}
+	}
+
+	// Create table columns with calculated widths
+	var tableColumns []table.Column
+	for i, col := range columns {
+		// Limit maximum column width to prevent extremely wide columns
+		maxWidth := colWidths[i]
+		if maxWidth > 50 {
+			maxWidth = 50
+		}
+		if maxWidth < 8 {
+			maxWidth = 8
+		}
+		tableColumns = append(tableColumns, table.NewColumn(col, col, maxWidth).WithFiltered(true))
+	}
+
+	// Create table rows with the collected data
+	var tableRows []table.Row
+	for _, row := range allRows {
+		rowData := table.RowData{}
+		for i, cellValue := range row {
 			rowData[columns[i]] = cellValue
 		}
 		tableRows = append(tableRows, table.NewRow(rowData))
