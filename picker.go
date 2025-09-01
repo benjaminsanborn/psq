@@ -148,7 +148,7 @@ func (m *PickerModel) updateContent() {
 		Bold(true).
 		Foreground(lipgloss.Color("86")).
 		Padding(0, 1).
-		Render("psqi - Service Picker")
+		Render("psq - Service Picker")
 	content += "\n\n"
 
 	content += "Select a database service to monitor:\n"

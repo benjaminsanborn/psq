@@ -433,7 +433,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d":
 			// Dump current queries to default file
 			if globalQueryDB != nil {
-				configDir := os.ExpandEnv("$HOME/.psqi")
+				configDir := os.ExpandEnv("$HOME/.psq")
 				defaultDumpFile := filepath.Join(configDir, "default_queries.db")
 
 				if err := globalQueryDB.DumpToFile(defaultDumpFile); err != nil {
@@ -541,7 +541,7 @@ func (m *Model) updateContent() {
 	content += " " + lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("86")).
-		Render("psqi@") +
+		Render("psq@") +
 		lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("201")).

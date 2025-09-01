@@ -1,4 +1,4 @@
-module psqi
+module psq
 
 go 1.23.0
 

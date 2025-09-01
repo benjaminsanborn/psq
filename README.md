@@ -1,4 +1,4 @@
-# psqi - PostgreSQL Monitoring CLI
+# psq - PostgreSQL Monitoring CLI
 
 A TUI-based PostgreSQL monitoring tool built with Go and Bubble Tea that reads database connections from `~/.pg_service.conf`.
 
@@ -19,7 +19,7 @@ A TUI-based PostgreSQL monitoring tool built with Go and Bubble Tea that reads d
    ```
 3. Build the application:
    ```bash
-   go build -o psqi
+   go build -o psq
    ```
 
 ## Configuration
@@ -53,7 +53,7 @@ password=staging_password
 
 ### Queries Configuration
 
-The tool automatically creates `~/.psqi/queries.json` on first run with default monitoring queries. You can edit this file to add, modify, or remove queries:
+The tool automatically creates `~/.psq/queries.json` on first run with default monitoring queries. You can edit this file to add, modify, or remove queries:
 
 ```json
 [
@@ -76,12 +76,12 @@ Run the monitoring interface:
 
 ```bash
 # Use default service
-./psqi
+./psq
 
 # Use specific service from ~/.pg_service.conf
-./psqi prod
-./psqi --service prod
-./psqi -s prod
+./psq prod
+./psq --service prod
+./psq -s prod
 ```
 
 ### Navigation
@@ -115,7 +115,7 @@ The tool comes with these pre-configured monitoring queries:
 
 To add your own monitoring queries:
 
-1. Add queries to `~/.psqi/queries/`
+1. Add queries to `~/.psq/queries/`
 2. Queries are .sql files where the first line include a comment which is the query title
 3. Restart the application
 

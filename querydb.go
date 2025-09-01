@@ -15,7 +15,7 @@ type QueryDB struct {
 }
 
 func NewQueryDB() (*QueryDB, error) {
-	configDir := filepath.Join(os.ExpandEnv("$HOME"), ".psqi")
+	configDir := filepath.Join(os.ExpandEnv("$HOME"), ".psq")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create config directory: %w", err)
 	}
@@ -127,7 +127,7 @@ func (qdb *QueryDB) migrateFromFiles() error {
 	}
 
 	// Try to load queries from the old file system
-	configDir := filepath.Join(os.ExpandEnv("$HOME"), ".psqi")
+	configDir := filepath.Join(os.ExpandEnv("$HOME"), ".psq")
 	sqlDir := filepath.Join(configDir, "queries")
 
 	// Check for a default dump file first
