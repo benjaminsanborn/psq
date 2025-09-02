@@ -8,11 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 )
 
 type App struct {
@@ -28,38 +31,145 @@ func NewApp(service string) *App {
 }
 
 func (a *App) Run() error {
-	p := tea.NewProgram(a.model, tea.WithAltScreen())
+	p := tea.NewProgram(a.model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("failed to run program: %w", err)
 	}
 	return nil
 }
 
+type keyMap struct {
+	Up       key.Binding
+	Down     key.Binding
+	Left     key.Binding
+	Right    key.Binding
+	Click    key.Binding
+	Execute  key.Binding
+	Search   key.Binding
+	Edit     key.Binding
+	New      key.Binding
+	Dump     key.Binding
+	Psql     key.Binding
+	Help     key.Binding
+	Quit     key.Binding
+	PageUp   key.Binding
+	PageDown key.Binding
+	Home     key.Binding
+	End      key.Binding
+}
+
+func (k keyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Left, k.Right, k.Click, k.Execute, k.Search, k.Help, k.Quit}
+}
+
+func (k keyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Left, k.Right, k.Click, k.Execute},
+		{k.Up, k.Down, k.PageUp, k.PageDown, k.Home, k.End},
+		{k.Search, k.Edit, k.New, k.Dump, k.Psql},
+		{k.Help, k.Quit},
+	}
+}
+
+var keys = keyMap{
+	Up: key.NewBinding(
+		key.WithKeys("up", "k"),
+		key.WithHelp("↑/k", "scroll up"),
+	),
+	Down: key.NewBinding(
+		key.WithKeys("down", "j"),
+		key.WithHelp("↓/j", "scroll down"),
+	),
+	Left: key.NewBinding(
+		key.WithKeys("left", "h"),
+		key.WithHelp("←/h", "previous query"),
+	),
+	Right: key.NewBinding(
+		key.WithKeys("right", "l"),
+		key.WithHelp("→/l", "next query"),
+	),
+	Click: key.NewBinding(
+		key.WithKeys(),
+		key.WithHelp("click", "select query"),
+	),
+	Execute: key.NewBinding(
+		key.WithKeys("enter", " ", "r"),
+		key.WithHelp("enter/space/r", "execute query"),
+	),
+	Search: key.NewBinding(
+		key.WithKeys("s"),
+		key.WithHelp("s", "search queries (type to filter, ↑/↓ navigate, enter select, esc cancel)"),
+	),
+	Edit: key.NewBinding(
+		key.WithKeys("e"),
+		key.WithHelp("e", "edit query"),
+	),
+	New: key.NewBinding(
+		key.WithKeys("n"),
+		key.WithHelp("n", "new query"),
+	),
+	Dump: key.NewBinding(
+		key.WithKeys("d"),
+		key.WithHelp("d", "dump queries"),
+	),
+	Psql: key.NewBinding(
+		key.WithKeys("x"),
+		key.WithHelp("x", "psql prompt"),
+	),
+	PageUp: key.NewBinding(
+		key.WithKeys("pageup"),
+		key.WithHelp("pgup", "page up"),
+	),
+	PageDown: key.NewBinding(
+		key.WithKeys("pagedown"),
+		key.WithHelp("pgdn", "page down"),
+	),
+	Home: key.NewBinding(
+		key.WithKeys("home"),
+		key.WithHelp("home", "go to top"),
+	),
+	End: key.NewBinding(
+		key.WithKeys("end"),
+		key.WithHelp("end", "go to bottom"),
+	),
+	Help: key.NewBinding(
+		key.WithKeys("?"),
+		key.WithHelp("?", "toggle help"),
+	),
+	Quit: key.NewBinding(
+		key.WithKeys("q", "ctrl+c"),
+		key.WithHelp("q", "quit"),
+	),
+}
+
 type Model struct {
-	queries         []Query
-	allQueries      []Query        // includes hidden queries for search
-	tempQueries     map[string]int // temporary order positions for hidden queries
-	selected        int
-	results         string
-	loading         bool
-	err             string
-	width           int
-	height          int
-	service         string
-	lastQuery       Query
-	viewport        viewport.Model
-	ready           bool
-	lastRefreshAt   time.Time
-	searchMode      bool
-	searchQuery     string
-	filteredQueries []Query
-	editMode        bool
-	editQuery       Query
-	nameInput       textinput.Model
-	descInput       textinput.Model
-	orderInput      textinput.Model
-	sqlTextarea     textarea.Model
-	editFocus       int // 0=name, 1=description, 2=order, 3=sql
+	queries          []Query
+	allQueries       []Query        // includes hidden queries for search
+	tempQueries      map[string]int // temporary order positions for hidden queries
+	selected         int
+	previousSelected int // track selection before entering modals
+	results          string
+	loading          bool
+	err              string
+	width            int
+	height           int
+	service          string
+	lastQuery        Query
+	viewport         viewport.Model
+	ready            bool
+	lastRefreshAt    time.Time
+	searchMode       bool
+	searchQuery      string
+	filteredQueries  []Query
+	editMode         bool
+	editQuery        Query
+	nameInput        textinput.Model
+	descInput        textinput.Model
+	orderInput       textinput.Model
+	sqlTextarea      textarea.Model
+	editFocus        int // 0=name, 1=description, 2=order, 3=sql
+	help             help.Model
+	showHelp         bool
 }
 
 type Query struct {
@@ -105,6 +215,8 @@ func NewModel(service string) *Model {
 		searchQuery:     "",
 		filteredQueries: queries,
 		editMode:        false,
+		help:            help.New(),
+		showHelp:        false,
 	}
 }
 
@@ -149,6 +261,19 @@ func (m *Model) isTemporaryQuery(queryName string) bool {
 	return exists
 }
 
+func (m *Model) ensureValidSelection() {
+	if len(m.queries) == 0 {
+		m.selected = 0
+		return
+	}
+	if m.selected >= len(m.queries) {
+		m.selected = len(m.queries) - 1
+	}
+	if m.selected < 0 {
+		m.selected = 0
+	}
+}
+
 func (m *Model) initEditor(query Query) {
 	// Initialize name input
 	m.nameInput = textinput.New()
@@ -187,6 +312,37 @@ func (m *Model) initEditor(query Query) {
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.MouseMsg:
+		// Handle mouse events only when ready and not in edit/search mode
+		if !m.ready || m.editMode || m.searchMode {
+			return m, nil
+		}
+
+		// Only handle left mouse button release (clicks)
+		if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
+			return m, nil
+		}
+
+		// Check if any query zone was clicked
+		for i := range m.queries {
+			zoneID := fmt.Sprintf("query_%d", i)
+			if zone.Get(zoneID).InBounds(msg) {
+				// Query was clicked, select it and run it
+				if i < len(m.queries) {
+					m.selected = i
+					m.ensureValidSelection()
+					m.loading = true
+					m.err = ""
+					m.results = ""
+					m.lastQuery = m.queries[m.selected]
+					m.updateContent()
+					return m, m.runQuery(m.queries[m.selected])
+				}
+			}
+		}
+
+		return m, nil
+
 	case tea.KeyMsg:
 		if !m.ready {
 			return m, nil
@@ -194,11 +350,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Handle edit mode
 		if m.editMode {
-			switch msg.String() {
-			case "ctrl+c", "escape":
+			// Check for escape key by type as well as string
+			if msg.Type == tea.KeyEscape || msg.String() == "escape" || msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+[" {
 				m.editMode = false
+				// Restore previous selection
+				if m.previousSelected < len(m.queries) {
+					m.selected = m.previousSelected
+				}
+				m.ensureValidSelection()
 				m.updateContent()
 				return m, nil
+			}
+			switch msg.String() {
 			case "ctrl+s":
 				// Save the query
 				newQuery := Query{
@@ -243,6 +406,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									break
 								}
 							}
+							m.ensureValidSelection()
 						}
 						m.editMode = false
 						m.loading = true
@@ -301,14 +465,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Handle search mode
 		if m.searchMode {
-			switch msg.String() {
-			case "escape":
+			// Check for escape key by type as well as string
+			if msg.Type == tea.KeyEscape || msg.String() == "escape" || msg.String() == "esc" || msg.String() == "ctrl+[" {
 				m.searchMode = false
 				m.searchQuery = ""
 				m.filteredQueries = m.queries // Back to visible queries only
-				m.selected = 0
+				// Restore previous selection
+				if m.previousSelected < len(m.queries) {
+					m.selected = m.previousSelected
+				}
+				m.ensureValidSelection()
 				m.updateContent()
 				return m, nil
+			}
+			switch msg.String() {
 			case "enter":
 				if len(m.filteredQueries) > 0 {
 					m.searchMode = false
@@ -357,12 +527,38 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Handle help mode escape
+		if m.showHelp && (msg.Type == tea.KeyEscape || msg.String() == "escape" || msg.String() == "esc" || msg.String() == "ctrl+[") {
+			m.showHelp = false
+			// Restore previous selection
+			if m.previousSelected < len(m.queries) {
+				m.selected = m.previousSelected
+			}
+			m.ensureValidSelection()
+			m.updateContent()
+			return m, nil
+		}
+
 		// Normal mode
 		switch msg.String() {
+		case "?":
+			if !m.showHelp {
+				m.previousSelected = m.selected
+			} else {
+				// Closing help, restore previous selection
+				if m.previousSelected < len(m.queries) {
+					m.selected = m.previousSelected
+				}
+				m.ensureValidSelection()
+			}
+			m.showHelp = !m.showHelp
+			m.updateContent()
+			return m, nil
 		case "q", "ctrl+c":
 			return m, tea.Quit
 
 		case "s":
+			m.previousSelected = m.selected
 			m.searchMode = true
 			m.searchQuery = ""
 			m.filteredQueries = m.allQueries // Use all queries for search
@@ -374,23 +570,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "left", "h":
 			if m.selected > 0 {
 				m.selected--
-				m.loading = true
-				m.err = ""
-				m.results = ""
-				m.lastQuery = m.queries[m.selected]
-				// Update display immediately
-				return m, m.runQuery(m.queries[m.selected])
+				m.ensureValidSelection()
+				if len(m.queries) > 0 {
+					m.loading = true
+					m.err = ""
+					m.results = ""
+					m.lastQuery = m.queries[m.selected]
+					// Update display immediately
+					return m, m.runQuery(m.queries[m.selected])
+				}
 			}
 		case "right", "l":
 			if m.selected < len(m.queries)-1 {
 				m.selected++
-				m.loading = true
-				m.err = ""
-				m.results = ""
-				m.lastQuery = m.queries[m.selected]
-				// Update display immediately
-				m.updateContent()
-				return m, m.runQuery(m.queries[m.selected])
+				m.ensureValidSelection()
+				if len(m.queries) > 0 {
+					m.loading = true
+					m.err = ""
+					m.results = ""
+					m.lastQuery = m.queries[m.selected]
+					// Update display immediately
+					m.updateContent()
+					return m, m.runQuery(m.queries[m.selected])
+				}
 			}
 
 		// Results viewport scrolling
@@ -410,6 +612,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Query execution
 		case "enter", " ", "r":
 			if len(m.queries) > 0 && m.canRefresh() {
+				m.ensureValidSelection()
 				m.loading = true
 				m.err = ""
 				m.lastQuery = m.queries[m.selected]
@@ -417,6 +620,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "e":
 			if len(m.queries) > 0 {
+				m.ensureValidSelection()
+				m.previousSelected = m.selected
 				m.editMode = true
 				m.editQuery = m.queries[m.selected]
 				m.initEditor(m.editQuery)
@@ -425,6 +630,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "n":
 			// Create new query
+			m.previousSelected = m.selected
 			m.editMode = true
 			m.editQuery = Query{} // Empty query
 			m.initEditor(m.editQuery)
@@ -494,6 +700,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Execute first query immediately when ready
 			if len(m.queries) > 0 {
+				m.ensureValidSelection()
 				m.loading = true
 				m.lastQuery = m.queries[m.selected]
 				m.updateContent()
@@ -510,25 +717,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.lastRefreshAt = time.Now()
 		m.updateContent()
-		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return m, tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
 			return tickMsg(t)
 		})
 	case queryErrorMsg:
 		m.err = string(msg)
 		m.loading = false
 		m.updateContent()
-		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-			return tickMsg(t)
-		})
 	case tickMsg:
 		if len(m.queries) > 0 && m.canRefresh() {
 			m.loading = true
 			m.updateContent()
 			return m, m.runQuery(m.lastQuery)
 		}
-		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-			return tickMsg(t)
-		})
 	}
 
 	return m, nil
@@ -546,8 +747,14 @@ func (m *Model) updateContent() {
 			Bold(true).
 			Foreground(lipgloss.Color("201")).
 			Render(m.service)
+
+	// Show help if requested
+	if m.showHelp {
+		content += "\n\n" + m.customHelpView()
+		m.viewport.SetContent(content)
+		return
+	}
 	if m.searchMode {
-		content += ": type to search queries, ↑/↓ to navigate, Enter to select, Esc to cancel\n"
 		content += "\nSearch: " + m.searchQuery + "█\n\n"
 
 		// Display filtered queries
@@ -611,33 +818,42 @@ func (m *Model) updateContent() {
 		}
 		content += "SQL:\n" + sqlStyle.Render(m.sqlTextarea.View()) + "\n"
 	} else {
-		content += ": ←/→ to select query, s to search, e to edit query, n to create new query, d to dump queries, x for psql prompt, q to quit\n"
+		content += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(": Press ? for help\n")
 
 		// Query list
 		content += "\n "
 		for i, query := range m.queries {
+			var queryText string
 			if i == m.selected {
 				style := lipgloss.NewStyle().
 					Bold(true).
-					Foreground(lipgloss.Color("86"))
+					Foreground(lipgloss.Color("86")).
+					Background(lipgloss.Color("235"))
 
 				// Add italics for temporary queries
 				if m.isTemporaryQuery(query.Name) {
 					style = style.Italic(true)
 				}
 
-				content += style.Render(query.Name)
+				queryText = style.Render(query.Name)
 			} else {
+				// Non-selected queries: subtle background and padding to show they're clickable
+				baseStyle := lipgloss.NewStyle().
+					Background(lipgloss.Color("238")).
+					Foreground(lipgloss.Color("252"))
+
 				if m.isTemporaryQuery(query.Name) {
-					content += lipgloss.NewStyle().
-						Italic(true).
-						Render(query.Name)
-				} else {
-					content += query.Name
+					baseStyle = baseStyle.Italic(true)
 				}
+
+				queryText = baseStyle.Render(query.Name)
 			}
+
+			// Wrap in bubblezone mark for clickability
+			content += zone.Mark(fmt.Sprintf("query_%d", i), queryText)
+
 			if i < len(m.queries)-1 {
-				content += " | "
+				content += " "
 			}
 		}
 	}
@@ -657,6 +873,55 @@ func (m *Model) updateContent() {
 
 func (m *Model) canRefresh() bool {
 	return time.Since(m.lastRefreshAt) >= 500*time.Millisecond
+}
+
+func (m *Model) customHelpView() string {
+	var helpText strings.Builder
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("86")).
+		MarginBottom(1)
+
+	keyStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("39"))
+
+	descStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("244"))
+
+	helpText.WriteString(titleStyle.Render("Help") + "\n\n")
+
+	// Query Navigation
+	helpText.WriteString(titleStyle.Render("Query Navigation:") + "\n")
+	helpText.WriteString(keyStyle.Render("←/h") + " " + descStyle.Render("previous query") + "\n")
+	helpText.WriteString(keyStyle.Render("→/l") + " " + descStyle.Render("next query") + "\n")
+	helpText.WriteString(keyStyle.Render("click") + " " + descStyle.Render("select query") + "\n")
+	helpText.WriteString(keyStyle.Render("enter/space/r") + " " + descStyle.Render("execute query") + "\n\n")
+
+	// Viewport Navigation
+	helpText.WriteString(titleStyle.Render("Viewport Navigation:") + "\n")
+	helpText.WriteString(keyStyle.Render("↑/k") + " " + descStyle.Render("scroll up") + "\n")
+	helpText.WriteString(keyStyle.Render("↓/j") + " " + descStyle.Render("scroll down") + "\n")
+	helpText.WriteString(keyStyle.Render("pgup") + " " + descStyle.Render("page up") + "\n")
+	helpText.WriteString(keyStyle.Render("pgdn") + " " + descStyle.Render("page down") + "\n")
+	helpText.WriteString(keyStyle.Render("home") + " " + descStyle.Render("go to top") + "\n")
+	helpText.WriteString(keyStyle.Render("end") + " " + descStyle.Render("go to bottom") + "\n\n")
+
+	// Query Operations
+	helpText.WriteString(titleStyle.Render("Query Operations:") + "\n")
+	helpText.WriteString(keyStyle.Render("s") + " " + descStyle.Render("search queries (type to filter, ↑/↓ navigate, enter select, esc cancel)") + "\n")
+	helpText.WriteString(keyStyle.Render("e") + " " + descStyle.Render("edit query") + "\n")
+	helpText.WriteString(keyStyle.Render("n") + " " + descStyle.Render("new query") + "\n")
+	helpText.WriteString(keyStyle.Render("d") + " " + descStyle.Render("dump queries") + "\n")
+	helpText.WriteString(keyStyle.Render("x") + " " + descStyle.Render("psql prompt") + "\n\n")
+
+	// System
+	helpText.WriteString(titleStyle.Render("System:") + "\n")
+	helpText.WriteString(keyStyle.Render("?") + " " + descStyle.Render("toggle help") + "\n")
+	helpText.WriteString(keyStyle.Render("q") + " " + descStyle.Render("quit") + "\n")
+
+	return helpText.String()
 }
 
 func (m *Model) filterQueries() {
@@ -692,5 +957,5 @@ func (m *Model) View() string {
 		return "Getting ready..."
 	}
 
-	return m.viewport.View()
+	return zone.Scan(m.viewport.View())
 }

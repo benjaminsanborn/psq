@@ -4,10 +4,15 @@ import (
 	"fmt"
 	"os"
 
+	zone "github.com/lrstanley/bubblezone"
 	"github.com/spf13/cobra"
 )
 
 func main() {
+	// Initialize bubblezone global manager
+	zone.NewGlobal()
+	defer zone.Close()
+
 	var service string
 
 	var rootCmd = &cobra.Command{
