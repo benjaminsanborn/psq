@@ -1,4 +1,4 @@
-# psq - PostgreSQL Monitoring CLI
+# psq - postgres status query
 
 A TUI-based PostgreSQL monitoring tool built with Go and Bubble Tea that reads database connections from `~/.pg_service.conf`.
 
