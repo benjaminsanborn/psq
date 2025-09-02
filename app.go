@@ -137,8 +137,8 @@ var keys = keyMap{
 		key.WithHelp("?", "toggle help"),
 	),
 	Quit: key.NewBinding(
-		key.WithKeys("q", "ctrl+c"),
-		key.WithHelp("q", "quit"),
+		key.WithKeys("esc", "ctrl+c"),
+		key.WithHelp("esc", "quit"),
 	),
 }
 
@@ -554,7 +554,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 			m.updateContent()
 			return m, nil
-		case "q", "ctrl+c":
+		case "esc", "ctrl+c":
 			return m, tea.Quit
 
 		case "s":
@@ -919,7 +919,7 @@ func (m *Model) customHelpView() string {
 	// System
 	helpText.WriteString(titleStyle.Render("System:") + "\n")
 	helpText.WriteString(keyStyle.Render("?") + " " + descStyle.Render("toggle help") + "\n")
-	helpText.WriteString(keyStyle.Render("q") + " " + descStyle.Render("quit") + "\n")
+	helpText.WriteString(keyStyle.Render("esc") + " " + descStyle.Render("quit") + "\n")
 
 	return helpText.String()
 }

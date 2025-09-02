@@ -61,8 +61,8 @@ var pickerKeys = pickerKeyMap{
 		key.WithHelp("?", "toggle help"),
 	),
 	Quit: key.NewBinding(
-		key.WithKeys("q", "ctrl+c"),
-		key.WithHelp("q", "quit"),
+		key.WithKeys("esc", "ctrl+c"),
+		key.WithHelp("esc", "quit"),
 	),
 }
 
@@ -171,7 +171,7 @@ func (m *PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 			m.updateContent()
 			return m, nil
-		case "q", "ctrl+c":
+		case "esc", "ctrl+c":
 			return m, tea.Quit
 
 		case "up", "k":
@@ -256,6 +256,7 @@ func (m *PickerModel) updateContent() {
 		Foreground(lipgloss.Color("86")).
 		Padding(0, 1).
 		Render("psq - Service Picker")
+	content += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Press ? for help")
 	content += "\n\n"
 
 	// Show help if requested
@@ -266,7 +267,6 @@ func (m *PickerModel) updateContent() {
 	}
 
 	content += "Select a database service to monitor:\n"
-	content += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Press ? for help\n\n")
 
 	if m.err != "" {
 		content += "Error: " + m.err
@@ -287,7 +287,7 @@ func (m *PickerModel) updateContent() {
 				baseStyle := lipgloss.NewStyle().
 					Background(lipgloss.Color("238")).
 					Foreground(lipgloss.Color("252"))
-				serviceText = baseStyle.Render("  " + service)
+				serviceText = baseStyle.Render(service)
 			}
 
 			// Wrap in bubblezone mark for clickability
@@ -330,7 +330,7 @@ func (m *PickerModel) customHelpView() string {
 	// System
 	helpText.WriteString(titleStyle.Render("System:") + "\n")
 	helpText.WriteString(keyStyle.Render("?") + " " + descStyle.Render("toggle help") + "\n")
-	helpText.WriteString(keyStyle.Render("q") + " " + descStyle.Render("quit") + "\n")
+	helpText.WriteString(keyStyle.Render("esc") + " " + descStyle.Render("quit") + "\n")
 
 	return helpText.String()
 }
