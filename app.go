@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,6 +54,7 @@ type keyMap struct {
 	New      key.Binding
 	Dump     key.Binding
 	Psql     key.Binding
+	ChatGPT  key.Binding
 	Help     key.Binding
 	Quit     key.Binding
 	PageUp   key.Binding
@@ -67,7 +72,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 		{k.Left, k.Right, k.Click, k.Execute},
 		{k.Up, k.Down, k.PageUp, k.PageDown, k.Home, k.End},
 		{k.Search, k.Edit, k.New, k.Dump, k.Psql},
-		{k.Help, k.Quit},
+		{k.ChatGPT, k.Help, k.Quit},
 	}
 }
 
@@ -115,6 +120,10 @@ var keys = keyMap{
 	Psql: key.NewBinding(
 		key.WithKeys("x"),
 		key.WithHelp("x", "psql prompt"),
+	),
+	ChatGPT: key.NewBinding(
+		key.WithKeys("a"),
+		key.WithHelp("a", "chatgpt prompt (in new/edit mode)"),
 	),
 	PageUp: key.NewBinding(
 		key.WithKeys("pageup"),
@@ -168,6 +177,10 @@ type Model struct {
 	orderInput       textinput.Model
 	sqlTextarea      textarea.Model
 	editFocus        int // 0=name, 1=description, 2=order, 3=sql
+	chatgptMode      bool
+	chatgptInput     textinput.Model
+	chatgptLoading   bool
+	chatgptResponse  string // Store the generated SQL for review
 	help             help.Model
 	showHelp         bool
 }
@@ -178,6 +191,28 @@ type Query struct {
 	SQL           string `json:"sql"`
 	OrderPosition *int   `json:"order_position,omitempty"` // nil means hidden from top bar
 }
+
+// ChatGPT API types
+type ChatGPTRequest struct {
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+}
+
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type ChatGPTResponse struct {
+	Choices []Choice `json:"choices"`
+}
+
+type Choice struct {
+	Message Message `json:"message"`
+}
+
+type chatgptResponseMsg string
+type chatgptErrorMsg string
 
 type tickMsg time.Time
 
@@ -305,9 +340,86 @@ func (m *Model) initEditor(query Query) {
 	m.sqlTextarea.SetWidth(80)
 	m.sqlTextarea.SetHeight(10)
 
+	// Initialize ChatGPT input
+	m.chatgptInput = textinput.New()
+	m.chatgptInput.Placeholder = "Describe the SQL query you want (e.g., 'find all users created last week')"
+	m.chatgptInput.CharLimit = 200
+	m.chatgptInput.Width = 80
+
 	// Focus on the first input
 	m.editFocus = 0
 	m.nameInput.Focus()
+	m.chatgptMode = false
+	m.chatgptLoading = false
+	m.chatgptResponse = ""
+}
+
+func (m *Model) callChatGPT(prompt string) tea.Cmd {
+	return func() tea.Msg {
+		// Get OpenAI API key from environment
+		apiKey := os.Getenv("OPENAI_API_KEY")
+		if apiKey == "" {
+			return chatgptErrorMsg("OPENAI_API_KEY environment variable not set")
+		}
+
+		// Prepare the request
+		fullPrompt := fmt.Sprintf("Generate a PostgreSQL query for the following request: %s\n\nPlease respond with ONLY the SQL query, no explanations or additional text.", prompt)
+
+		reqBody := ChatGPTRequest{
+			Model: "gpt-3.5-turbo",
+			Messages: []Message{
+				{
+					Role:    "user",
+					Content: fullPrompt,
+				},
+			},
+		}
+
+		jsonData, err := json.Marshal(reqBody)
+		if err != nil {
+			return chatgptErrorMsg(fmt.Sprintf("Failed to marshal request: %v", err))
+		}
+
+		// Make the API call
+		req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewBuffer(jsonData))
+		if err != nil {
+			return chatgptErrorMsg(fmt.Sprintf("Failed to create request: %v", err))
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return chatgptErrorMsg(fmt.Sprintf("Failed to make API call: %v", err))
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return chatgptErrorMsg(fmt.Sprintf("API error (status %d): %s", resp.StatusCode, string(body)))
+		}
+
+		var chatResp ChatGPTResponse
+		if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+			return chatgptErrorMsg(fmt.Sprintf("Failed to decode response: %v", err))
+		}
+
+		if len(chatResp.Choices) == 0 {
+			return chatgptErrorMsg("No response from ChatGPT")
+		}
+
+		sql := strings.TrimSpace(chatResp.Choices[0].Message.Content)
+
+		// Clean up the response - remove code block markers if present
+		sql = strings.TrimPrefix(sql, "```sql")
+		sql = strings.TrimPrefix(sql, "```")
+		sql = strings.TrimSuffix(sql, "```")
+		sql = strings.TrimSpace(sql)
+
+		return chatgptResponseMsg(sql)
+	}
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -350,6 +462,52 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Handle edit mode
 		if m.editMode {
+			// Handle ChatGPT mode within edit mode
+			if m.chatgptMode {
+				// Check for escape key by type as well as string
+				if msg.Type == tea.KeyEscape || msg.String() == "escape" || msg.String() == "esc" || msg.String() == "ctrl+[" {
+					m.chatgptMode = false
+					m.chatgptInput.SetValue("")
+					m.chatgptResponse = ""
+					m.updateContent()
+					return m, nil
+				}
+				switch msg.String() {
+				case "enter":
+					if !m.chatgptLoading && m.chatgptInput.Value() != "" && m.chatgptResponse == "" {
+						m.chatgptLoading = true
+						prompt := m.chatgptInput.Value()
+						m.updateContent()
+						return m, m.callChatGPT(prompt)
+					}
+				case "c":
+					// Confirm and use the generated SQL
+					if m.chatgptResponse != "" {
+						m.chatgptMode = false
+						m.sqlTextarea.SetValue(m.chatgptResponse)
+						m.editFocus = 3 // Focus on SQL textarea
+						m.sqlTextarea.Focus()
+						m.nameInput.Blur()
+						m.descInput.Blur()
+						m.orderInput.Blur()
+						m.chatgptInput.Blur()
+						m.chatgptInput.SetValue("")
+						m.chatgptResponse = ""
+						m.updateContent()
+						return m, nil
+					}
+				default:
+					// Only allow editing the input if we haven't generated a response yet
+					if m.chatgptResponse == "" && !m.chatgptLoading {
+						var cmd tea.Cmd
+						m.chatgptInput, cmd = m.chatgptInput.Update(msg)
+						m.updateContent()
+						return m, cmd
+					}
+				}
+				return m, nil
+			}
+
 			// Check for escape key by type as well as string
 			if msg.Type == tea.KeyEscape || msg.String() == "escape" || msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+[" {
 				m.editMode = false
@@ -417,6 +575,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, m.runQuery(newQuery)
 					}
 				}
+				m.updateContent()
+				return m, nil
+			case "a":
+				// Open ChatGPT prompt
+				m.chatgptMode = true
+				m.chatgptInput.Focus()
+				m.chatgptInput.SetValue("")
 				m.updateContent()
 				return m, nil
 			case "tab", "shift+tab":
@@ -724,6 +889,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = string(msg)
 		m.loading = false
 		m.updateContent()
+	case chatgptResponseMsg:
+		// Handle successful ChatGPT response - store it for review
+		m.chatgptResponse = string(msg)
+		m.chatgptLoading = false
+		m.updateContent()
+		return m, nil
+	case chatgptErrorMsg:
+		// Handle ChatGPT error
+		m.err = string(msg)
+		m.chatgptLoading = false
+		m.chatgptMode = false
+		m.chatgptResponse = ""
+		m.updateContent()
+		return m, nil
 	case tickMsg:
 		if len(m.queries) > 0 && m.canRefresh() {
 			m.loading = true
@@ -774,49 +953,93 @@ func (m *Model) updateContent() {
 			}
 		}
 	} else if m.editMode {
-		content += ": Tab to switch fields, Ctrl+S to save, Esc to cancel\n\n"
+		if m.chatgptMode {
+			if m.chatgptResponse != "" {
+				content += ": Press 'c' to confirm and use this SQL, Esc to cancel\n\n"
+			} else {
+				content += ": Enter to generate SQL, Esc to cancel\n\n"
+			}
 
-		// Query editor
-		editorTitle := "Edit Query"
-		if m.editQuery.Name == "" {
-			editorTitle = "Create New Query"
-		}
-		content += lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("86")).
-			Render(editorTitle) + "\n\n"
+			// ChatGPT prompt
+			content += lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("86")).
+				Render("ChatGPT SQL Generator") + "\n\n"
 
-		// Name input
-		nameStyle := lipgloss.NewStyle()
-		if m.editFocus == 0 {
-			nameStyle = nameStyle.BorderStyle(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("86"))
-		}
-		content += "Name:\n" + nameStyle.Render(m.nameInput.View()) + "\n\n"
+			if m.chatgptLoading {
+				content += "Generating SQL query...\n\n"
+				content += lipgloss.NewStyle().
+					BorderStyle(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("240")).
+					Render(m.chatgptInput.View()) + "\n"
+			} else if m.chatgptResponse != "" {
+				// Show the original prompt (read-only)
+				content += "Your request:\n"
+				content += lipgloss.NewStyle().
+					BorderStyle(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("240")).
+					Render(m.chatgptInput.View()) + "\n\n"
 
-		// Description input
-		descStyle := lipgloss.NewStyle()
-		if m.editFocus == 1 {
-			descStyle = descStyle.BorderStyle(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("86"))
-		}
-		content += "Description:\n" + descStyle.Render(m.descInput.View()) + "\n\n"
+				// Show the generated SQL
+				content += "Generated SQL:\n"
+				sqlPreview := lipgloss.NewStyle().
+					BorderStyle(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("86")).
+					Padding(1).
+					Width(80)
+				content += sqlPreview.Render(m.chatgptResponse) + "\n"
+			} else {
+				content += "Describe what you want to query:\n"
+				content += lipgloss.NewStyle().
+					BorderStyle(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("86")).
+					Render(m.chatgptInput.View()) + "\n"
+			}
+		} else {
+			content += ": Tab to switch fields, Ctrl+S to save, 'a' for ChatGPT, Esc to cancel\n\n"
 
-		// Order input
-		orderStyle := lipgloss.NewStyle()
-		if m.editFocus == 2 {
-			orderStyle = orderStyle.BorderStyle(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("86"))
-		}
-		content += "Order Position (empty to hide from tabs):\n" + orderStyle.Render(m.orderInput.View()) + "\n\n"
+			// Query editor
+			editorTitle := "Edit Query"
+			if m.editQuery.Name == "" {
+				editorTitle = "Create New Query"
+			}
+			content += lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("86")).
+				Render(editorTitle) + "\n\n"
 
-		// SQL textarea
-		sqlStyle := lipgloss.NewStyle()
-		if m.editFocus == 3 {
-			sqlStyle = sqlStyle.BorderStyle(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("86"))
+			// Name input
+			nameStyle := lipgloss.NewStyle()
+			if m.editFocus == 0 {
+				nameStyle = nameStyle.BorderStyle(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("86"))
+			}
+			content += "Name:\n" + nameStyle.Render(m.nameInput.View()) + "\n\n"
+
+			// Description input
+			descStyle := lipgloss.NewStyle()
+			if m.editFocus == 1 {
+				descStyle = descStyle.BorderStyle(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("86"))
+			}
+			content += "Description:\n" + descStyle.Render(m.descInput.View()) + "\n\n"
+
+			// Order input
+			orderStyle := lipgloss.NewStyle()
+			if m.editFocus == 2 {
+				orderStyle = orderStyle.BorderStyle(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("86"))
+			}
+			content += "Order Position (empty to hide from tabs):\n" + orderStyle.Render(m.orderInput.View()) + "\n\n"
+
+			// SQL textarea
+			sqlStyle := lipgloss.NewStyle()
+			if m.editFocus == 3 {
+				sqlStyle = sqlStyle.BorderStyle(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("86"))
+			}
+			content += "SQL:\n" + sqlStyle.Render(m.sqlTextarea.View()) + "\n"
 		}
-		content += "SQL:\n" + sqlStyle.Render(m.sqlTextarea.View()) + "\n"
 	} else {
 		content += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(": Press ? for help\n")
 
@@ -913,6 +1136,8 @@ func (m *Model) customHelpView() string {
 	helpText.WriteString(keyStyle.Render("s") + " " + descStyle.Render("search queries (type to filter, ↑/↓ navigate, enter select, esc cancel)") + "\n")
 	helpText.WriteString(keyStyle.Render("e") + " " + descStyle.Render("edit query") + "\n")
 	helpText.WriteString(keyStyle.Render("n") + " " + descStyle.Render("new query") + "\n")
+	helpText.WriteString(keyStyle.Render("a") + " " + descStyle.Render("chatgpt prompt (in new/edit mode)") + "\n")
+	helpText.WriteString(keyStyle.Render("c") + " " + descStyle.Render("confirm chatgpt response") + "\n")
 	helpText.WriteString(keyStyle.Render("d") + " " + descStyle.Render("dump queries") + "\n")
 	helpText.WriteString(keyStyle.Render("x") + " " + descStyle.Render("psql prompt") + "\n\n")
 
