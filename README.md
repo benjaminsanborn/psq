@@ -53,22 +53,9 @@ password=staging_password
 
 ### Queries Configuration
 
-The tool automatically creates `~/.psq/queries.json` on first run with default monitoring queries. You can edit this file to add, modify, or remove queries:
+The tool automatically creates `~/.psq/queries.db` sqllite table on first run with default monitoring queries. You can edit this file to add, modify, or remove queries.
 
-```json
-[
-  {
-    "name": "Active Connections",
-    "description": "Show current active connections",
-    "sql": "SELECT pid, usename, application_name, client_addr, state, query_start, state_change FROM pg_stat_activity WHERE state IS NOT NULL ORDER BY query_start DESC;"
-  },
-  {
-    "name": "Custom Query",
-    "description": "Your custom monitoring query",
-    "sql": "SELECT * FROM your_table WHERE condition = 'value';"
-  }
-]
-```
+I periodically dump by queries.db file here and it can be moved to `~/.psq/queries.db` if you want to use my defaults.
 
 ## Usage
 
