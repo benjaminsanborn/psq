@@ -376,7 +376,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				// Parse order position (but don't save temporary ones)
-				if orderStr := strings.TrimSpace(m.orderInput.Value()); orderStr != "" {
+				orderStr := strings.TrimSpace(m.orderInput.Value())
+				isNewQuery := m.editQuery.Name == ""
+
+				if orderStr != "" {
 					var pos int
 					if n, err := fmt.Sscanf(orderStr, "%d", &pos); err == nil && n == 1 {
 						// Only set if it's not a temporary position or user changed it
@@ -385,6 +388,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+
+				// Check if we're removing position from an existing query
+				hadPosition := m.editQuery.OrderPosition != nil
+				willHavePosition := newQuery.OrderPosition != nil
 
 				if globalQueryDB != nil {
 					if err := globalQueryDB.SaveQuery(newQuery); err != nil {
@@ -404,8 +411,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							if allQueries, err := globalQueryDB.LoadAllQueries(); err == nil {
 								m.allQueries = allQueries
 							}
+
+							// If this is a new query without a position, or if we removed position from existing query, add it as temporary
+							if (isNewQuery && newQuery.OrderPosition == nil) || (!isNewQuery && hadPosition && !willHavePosition) {
+								m.addTemporaryQuery(newQuery)
+							}
+
 							// Find the updated/new query in the list
-							for i, q := range queries {
+							for i, q := range m.queries {
 								if q.Name == newQuery.Name {
 									m.selected = i
 									break
