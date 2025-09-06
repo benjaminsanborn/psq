@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -42,115 +41,6 @@ func (a *App) Run() error {
 	return nil
 }
 
-type keyMap struct {
-	Up       key.Binding
-	Down     key.Binding
-	Left     key.Binding
-	Right    key.Binding
-	Click    key.Binding
-	Execute  key.Binding
-	Search   key.Binding
-	Edit     key.Binding
-	New      key.Binding
-	Dump     key.Binding
-	Psql     key.Binding
-	ChatGPT  key.Binding
-	Help     key.Binding
-	Quit     key.Binding
-	PageUp   key.Binding
-	PageDown key.Binding
-	Home     key.Binding
-	End      key.Binding
-}
-
-func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Left, k.Right, k.Click, k.Execute, k.Search, k.Help, k.Quit}
-}
-
-func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{
-		{k.Left, k.Right, k.Click, k.Execute},
-		{k.Up, k.Down, k.PageUp, k.PageDown, k.Home, k.End},
-		{k.Search, k.Edit, k.New, k.Dump, k.Psql},
-		{k.ChatGPT, k.Help, k.Quit},
-	}
-}
-
-var keys = keyMap{
-	Up: key.NewBinding(
-		key.WithKeys("up", "k"),
-		key.WithHelp("↑/k", "scroll up"),
-	),
-	Down: key.NewBinding(
-		key.WithKeys("down", "j"),
-		key.WithHelp("↓/j", "scroll down"),
-	),
-	Left: key.NewBinding(
-		key.WithKeys("left", "h"),
-		key.WithHelp("←/h", "previous query"),
-	),
-	Right: key.NewBinding(
-		key.WithKeys("right", "l"),
-		key.WithHelp("→/l", "next query"),
-	),
-	Click: key.NewBinding(
-		key.WithKeys(),
-		key.WithHelp("click", "select query"),
-	),
-	Execute: key.NewBinding(
-		key.WithKeys("enter", " ", "r"),
-		key.WithHelp("enter/space/r", "execute query"),
-	),
-	Search: key.NewBinding(
-		key.WithKeys("s"),
-		key.WithHelp("s", "search queries (type to filter, ↑/↓ navigate, enter select, esc cancel)"),
-	),
-	Edit: key.NewBinding(
-		key.WithKeys("e"),
-		key.WithHelp("e", "edit query"),
-	),
-	New: key.NewBinding(
-		key.WithKeys("n"),
-		key.WithHelp("n", "new query"),
-	),
-	Dump: key.NewBinding(
-		key.WithKeys("d"),
-		key.WithHelp("d", "dump queries"),
-	),
-	Psql: key.NewBinding(
-		key.WithKeys("x"),
-		key.WithHelp("x", "psql prompt"),
-	),
-	ChatGPT: key.NewBinding(
-		key.WithKeys("a"),
-		key.WithHelp("a", "chatgpt prompt (in new/edit mode)"),
-	),
-	PageUp: key.NewBinding(
-		key.WithKeys("pageup"),
-		key.WithHelp("pgup", "page up"),
-	),
-	PageDown: key.NewBinding(
-		key.WithKeys("pagedown"),
-		key.WithHelp("pgdn", "page down"),
-	),
-	Home: key.NewBinding(
-		key.WithKeys("home"),
-		key.WithHelp("home", "go to top"),
-	),
-	End: key.NewBinding(
-		key.WithKeys("end"),
-		key.WithHelp("end", "go to bottom"),
-	),
-	Help: key.NewBinding(
-		key.WithKeys("?"),
-		key.WithHelp("?", "toggle help"),
-	),
-	Quit: key.NewBinding(
-		key.WithKeys("esc", "ctrl+c"),
-		key.WithHelp("esc", "quit"),
-	),
-}
-
 type Model struct {
 	queries          []Query
 	allQueries       []Query        // includes hidden queries for search
@@ -177,8 +67,7 @@ type Model struct {
 	orderInput       textinput.Model
 	sqlTextarea      textarea.Model
 	aiPromptInput    textinput.Model
-	editFocus        int // 0=name, 1=description, 2=order, 3=sql, 4=ai-prompt
-	chatgptInput     textinput.Model
+	editFocus        int    // 0=name, 1=description, 2=order, 3=sql, 4=ai-prompt
 	chatgptResponse  string // Store the generated SQL for review
 	help             help.Model
 	showHelp         bool
@@ -287,23 +176,6 @@ func (m *Model) addTemporaryQuery(query Query) {
 
 		// Add to visible queries
 		m.queries = append(m.queries, tempQuery)
-
-		// Automatically persist the query to the database
-		if globalQueryDB != nil {
-			if err := globalQueryDB.SaveQuery(tempQuery); err == nil {
-				// Remove from temporary queries since it's now persistent
-				delete(m.tempQueries, query.Name)
-
-				// Reload queries to get the updated list
-				if queries, err := loadQueries(); err == nil {
-					m.queries = queries
-					// Also reload all queries for search
-					if allQueries, err := globalQueryDB.LoadAllQueries(); err == nil {
-						m.allQueries = allQueries
-					}
-				}
-			}
-		}
 	}
 }
 
@@ -358,15 +230,9 @@ func (m *Model) initEditor(query Query) {
 
 	// Initialize AI prompt input
 	m.aiPromptInput = textinput.New()
-	m.aiPromptInput.Placeholder = "Describe what you want to query (press Enter to generate SQL)"
+	m.aiPromptInput.Placeholder = "Describe what you want to query (press Enter to generate/modify SQL)"
 	m.aiPromptInput.CharLimit = 200
 	m.aiPromptInput.Width = 80
-
-	// Initialize ChatGPT input
-	m.chatgptInput = textinput.New()
-	m.chatgptInput.Placeholder = "Describe the SQL query you want (e.g., 'find all users created last week')"
-	m.chatgptInput.CharLimit = 200
-	m.chatgptInput.Width = 80
 
 	// Focus on the first input
 	m.editFocus = 0
@@ -374,7 +240,7 @@ func (m *Model) initEditor(query Query) {
 	m.chatgptResponse = ""
 }
 
-func (m *Model) callChatGPT(prompt string, currentQuery Query) tea.Cmd {
+func (m *Model) callChatGPT(prompt string) tea.Cmd {
 	return func() tea.Msg {
 		// Get OpenAI API key from environment
 		apiKey := os.Getenv("OPENAI_API_KEY")
@@ -382,11 +248,11 @@ func (m *Model) callChatGPT(prompt string, currentQuery Query) tea.Cmd {
 			return chatgptErrorMsg("OPENAI_API_KEY environment variable not set")
 		}
 
-		// Prepare the request with current query context
+		// Prepare the request - include current query content if it exists
 		var fullPrompt string
-		if currentQuery.SQL != "" {
-			fullPrompt = fmt.Sprintf("I have an existing PostgreSQL query:\n\nName: %s\nDescription: %s\nSQL:\n%s\n\nPlease modify or generate a new PostgreSQL query based on this request: %s\n\nPlease respond with ONLY the SQL query, no explanations or additional text.",
-				currentQuery.Name, currentQuery.Description, currentQuery.SQL, prompt)
+		currentSQL := strings.TrimSpace(m.sqlTextarea.Value())
+		if currentSQL != "" {
+			fullPrompt = fmt.Sprintf("Modify the following PostgreSQL query based on this request: %s\n\nCurrent query:\n%s\n\nPlease respond with ONLY the modified SQL query, no explanations or additional text.", prompt, currentSQL)
 		} else {
 			fullPrompt = fmt.Sprintf("Generate a PostgreSQL query for the following request: %s\n\nPlease respond with ONLY the SQL query, no explanations or additional text.", prompt)
 		}
@@ -488,55 +354,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Handle edit mode
 		if m.editMode {
+
 			// Check for escape key by type as well as string
 			if msg.Type == tea.KeyEscape || msg.String() == "escape" || msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+[" {
-				// Auto-save query if it has meaningful content
-				if strings.TrimSpace(m.nameInput.Value()) != "" && strings.TrimSpace(m.sqlTextarea.Value()) != "" {
-					newQuery := Query{
-						Name:        m.nameInput.Value(),
-						Description: m.descInput.Value(),
-						SQL:         m.sqlTextarea.Value(),
-					}
-
-					// Parse order position
-					if orderStr := strings.TrimSpace(m.orderInput.Value()); orderStr != "" {
-						var pos int
-						if n, err := fmt.Sscanf(orderStr, "%d", &pos); err == nil && n == 1 {
-							if !m.isTemporaryQuery(m.editQuery.Name) || orderStr != fmt.Sprintf("%d", m.tempQueries[m.editQuery.Name]) {
-								newQuery.OrderPosition = &pos
-							}
-						}
-					}
-
-					// Save the query
-					if globalQueryDB != nil {
-						if err := globalQueryDB.SaveQuery(newQuery); err == nil {
-							// Remove from temporary queries if it was temporary
-							if m.isTemporaryQuery(m.editQuery.Name) {
-								delete(m.tempQueries, m.editQuery.Name)
-							}
-
-							// Reload queries
-							if queries, err := loadQueries(); err == nil {
-								m.queries = queries
-								if allQueries, err := globalQueryDB.LoadAllQueries(); err == nil {
-									m.allQueries = allQueries
-								}
-								// Find the saved query in the list
-								for i, q := range queries {
-									if q.Name == newQuery.Name {
-										m.selected = i
-										break
-									}
-								}
-							}
-						}
-					}
-				}
-
 				m.editMode = false
-				// Restore previous selection only if we didn't save a new query
-				if m.previousSelected < len(m.queries) && (strings.TrimSpace(m.nameInput.Value()) == "" || strings.TrimSpace(m.sqlTextarea.Value()) == "") {
+				// Restore previous selection
+				if m.previousSelected < len(m.queries) {
 					m.selected = m.previousSelected
 				}
 				m.ensureValidSelection()
@@ -647,16 +470,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if msg.String() == "enter" && m.aiPromptInput.Value() != "" {
 						// Generate SQL from AI prompt
 						prompt := m.aiPromptInput.Value()
-
-						// Create current query context from the current form state
-						currentQuery := Query{
-							Name:        m.nameInput.Value(),
-							Description: m.descInput.Value(),
-							SQL:         m.sqlTextarea.Value(),
-						}
-
 						m.updateContent()
-						return m, m.callChatGPT(prompt, currentQuery)
+						return m, m.callChatGPT(prompt)
 					}
 					m.aiPromptInput, cmd = m.aiPromptInput.Update(msg)
 				}
@@ -930,17 +745,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle successful ChatGPT response
 		sql := string(msg)
 
-		// Always automatically update the SQL field and exit ChatGPT mode
+		// Always directly populate SQL textarea
 		if m.editMode {
 			m.sqlTextarea.SetValue(sql)
-			m.aiPromptInput.SetValue("") // Clear the prompt after successful generation
-			m.editFocus = 3              // Focus on SQL textarea
+			m.chatgptResponse = ""
+
+			// If we were in AI prompt mode, clear that too
+			if m.editFocus == 4 {
+				m.aiPromptInput.SetValue("")
+			}
+
+			// Focus on SQL textarea
+			m.editFocus = 3
 			m.sqlTextarea.Focus()
 			m.nameInput.Blur()
 			m.descInput.Blur()
 			m.orderInput.Blur()
 			m.aiPromptInput.Blur()
-			m.chatgptInput.Blur()
 		}
 
 		m.updateContent()
@@ -1001,7 +822,7 @@ func (m *Model) updateContent() {
 			}
 		}
 	} else if m.editMode {
-		content += ": Tab to switch fields, Ctrl+S to save, 'a' for ChatGPT, Esc to cancel\n\n"
+		content += ": Tab to switch fields, Ctrl+S to save, Esc to cancel\n\n"
 
 		// Query editor
 		editorTitle := "Edit Query"
@@ -1045,17 +866,17 @@ func (m *Model) updateContent() {
 		}
 		content += "SQL:\n" + sqlStyle.Render(m.sqlTextarea.View()) + "\n\n"
 
-		// AI prompt input
+		// AI Query Generator input
 		aiStyle := lipgloss.NewStyle()
 		if m.editFocus == 4 {
 			aiStyle = aiStyle.BorderStyle(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("86"))
 		}
-		content += "AI Prompt:\n" + aiStyle.Render(m.aiPromptInput.View()) + "\n"
+		content += "AI Query Generator (Enter to generate/modify SQL):\n" + aiStyle.Render(m.aiPromptInput.View()) + "\n"
 	} else {
 		content += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(": Press ? for help\n")
 
-		// Query listt
+		// Query list
 		content += "\n "
 		for i, query := range m.queries {
 			var queryText string
