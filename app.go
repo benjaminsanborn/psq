@@ -176,10 +176,9 @@ type Model struct {
 	descInput        textinput.Model
 	orderInput       textinput.Model
 	sqlTextarea      textarea.Model
-	editFocus        int // 0=name, 1=description, 2=order, 3=sql
-	chatgptMode      bool
+	aiPromptInput    textinput.Model
+	editFocus        int // 0=name, 1=description, 2=order, 3=sql, 4=ai-prompt
 	chatgptInput     textinput.Model
-	chatgptLoading   bool
 	chatgptResponse  string // Store the generated SQL for review
 	help             help.Model
 	showHelp         bool
@@ -288,6 +287,23 @@ func (m *Model) addTemporaryQuery(query Query) {
 
 		// Add to visible queries
 		m.queries = append(m.queries, tempQuery)
+
+		// Automatically persist the query to the database
+		if globalQueryDB != nil {
+			if err := globalQueryDB.SaveQuery(tempQuery); err == nil {
+				// Remove from temporary queries since it's now persistent
+				delete(m.tempQueries, query.Name)
+
+				// Reload queries to get the updated list
+				if queries, err := loadQueries(); err == nil {
+					m.queries = queries
+					// Also reload all queries for search
+					if allQueries, err := globalQueryDB.LoadAllQueries(); err == nil {
+						m.allQueries = allQueries
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -340,6 +356,12 @@ func (m *Model) initEditor(query Query) {
 	m.sqlTextarea.SetWidth(80)
 	m.sqlTextarea.SetHeight(10)
 
+	// Initialize AI prompt input
+	m.aiPromptInput = textinput.New()
+	m.aiPromptInput.Placeholder = "Describe what you want to query (press Enter to generate SQL)"
+	m.aiPromptInput.CharLimit = 200
+	m.aiPromptInput.Width = 80
+
 	// Initialize ChatGPT input
 	m.chatgptInput = textinput.New()
 	m.chatgptInput.Placeholder = "Describe the SQL query you want (e.g., 'find all users created last week')"
@@ -349,12 +371,10 @@ func (m *Model) initEditor(query Query) {
 	// Focus on the first input
 	m.editFocus = 0
 	m.nameInput.Focus()
-	m.chatgptMode = false
-	m.chatgptLoading = false
 	m.chatgptResponse = ""
 }
 
-func (m *Model) callChatGPT(prompt string) tea.Cmd {
+func (m *Model) callChatGPT(prompt string, currentQuery Query) tea.Cmd {
 	return func() tea.Msg {
 		// Get OpenAI API key from environment
 		apiKey := os.Getenv("OPENAI_API_KEY")
@@ -362,8 +382,14 @@ func (m *Model) callChatGPT(prompt string) tea.Cmd {
 			return chatgptErrorMsg("OPENAI_API_KEY environment variable not set")
 		}
 
-		// Prepare the request
-		fullPrompt := fmt.Sprintf("Generate a PostgreSQL query for the following request: %s\n\nPlease respond with ONLY the SQL query, no explanations or additional text.", prompt)
+		// Prepare the request with current query context
+		var fullPrompt string
+		if currentQuery.SQL != "" {
+			fullPrompt = fmt.Sprintf("I have an existing PostgreSQL query:\n\nName: %s\nDescription: %s\nSQL:\n%s\n\nPlease modify or generate a new PostgreSQL query based on this request: %s\n\nPlease respond with ONLY the SQL query, no explanations or additional text.",
+				currentQuery.Name, currentQuery.Description, currentQuery.SQL, prompt)
+		} else {
+			fullPrompt = fmt.Sprintf("Generate a PostgreSQL query for the following request: %s\n\nPlease respond with ONLY the SQL query, no explanations or additional text.", prompt)
+		}
 
 		reqBody := ChatGPTRequest{
 			Model: "gpt-3.5-turbo",
@@ -462,57 +488,55 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Handle edit mode
 		if m.editMode {
-			// Handle ChatGPT mode within edit mode
-			if m.chatgptMode {
-				// Check for escape key by type as well as string
-				if msg.Type == tea.KeyEscape || msg.String() == "escape" || msg.String() == "esc" || msg.String() == "ctrl+[" {
-					m.chatgptMode = false
-					m.chatgptInput.SetValue("")
-					m.chatgptResponse = ""
-					m.updateContent()
-					return m, nil
-				}
-				switch msg.String() {
-				case "enter":
-					if !m.chatgptLoading && m.chatgptInput.Value() != "" && m.chatgptResponse == "" {
-						m.chatgptLoading = true
-						prompt := m.chatgptInput.Value()
-						m.updateContent()
-						return m, m.callChatGPT(prompt)
-					}
-				case "c":
-					// Confirm and use the generated SQL
-					if m.chatgptResponse != "" {
-						m.chatgptMode = false
-						m.sqlTextarea.SetValue(m.chatgptResponse)
-						m.editFocus = 3 // Focus on SQL textarea
-						m.sqlTextarea.Focus()
-						m.nameInput.Blur()
-						m.descInput.Blur()
-						m.orderInput.Blur()
-						m.chatgptInput.Blur()
-						m.chatgptInput.SetValue("")
-						m.chatgptResponse = ""
-						m.updateContent()
-						return m, nil
-					}
-				default:
-					// Only allow editing the input if we haven't generated a response yet
-					if m.chatgptResponse == "" && !m.chatgptLoading {
-						var cmd tea.Cmd
-						m.chatgptInput, cmd = m.chatgptInput.Update(msg)
-						m.updateContent()
-						return m, cmd
-					}
-				}
-				return m, nil
-			}
-
 			// Check for escape key by type as well as string
 			if msg.Type == tea.KeyEscape || msg.String() == "escape" || msg.String() == "esc" || msg.String() == "ctrl+c" || msg.String() == "ctrl+[" {
+				// Auto-save query if it has meaningful content
+				if strings.TrimSpace(m.nameInput.Value()) != "" && strings.TrimSpace(m.sqlTextarea.Value()) != "" {
+					newQuery := Query{
+						Name:        m.nameInput.Value(),
+						Description: m.descInput.Value(),
+						SQL:         m.sqlTextarea.Value(),
+					}
+
+					// Parse order position
+					if orderStr := strings.TrimSpace(m.orderInput.Value()); orderStr != "" {
+						var pos int
+						if n, err := fmt.Sscanf(orderStr, "%d", &pos); err == nil && n == 1 {
+							if !m.isTemporaryQuery(m.editQuery.Name) || orderStr != fmt.Sprintf("%d", m.tempQueries[m.editQuery.Name]) {
+								newQuery.OrderPosition = &pos
+							}
+						}
+					}
+
+					// Save the query
+					if globalQueryDB != nil {
+						if err := globalQueryDB.SaveQuery(newQuery); err == nil {
+							// Remove from temporary queries if it was temporary
+							if m.isTemporaryQuery(m.editQuery.Name) {
+								delete(m.tempQueries, m.editQuery.Name)
+							}
+
+							// Reload queries
+							if queries, err := loadQueries(); err == nil {
+								m.queries = queries
+								if allQueries, err := globalQueryDB.LoadAllQueries(); err == nil {
+									m.allQueries = allQueries
+								}
+								// Find the saved query in the list
+								for i, q := range queries {
+									if q.Name == newQuery.Name {
+										m.selected = i
+										break
+									}
+								}
+							}
+						}
+					}
+				}
+
 				m.editMode = false
-				// Restore previous selection
-				if m.previousSelected < len(m.queries) {
+				// Restore previous selection only if we didn't save a new query
+				if m.previousSelected < len(m.queries) && (strings.TrimSpace(m.nameInput.Value()) == "" || strings.TrimSpace(m.sqlTextarea.Value()) == "") {
 					m.selected = m.previousSelected
 				}
 				m.ensureValidSelection()
@@ -577,19 +601,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.updateContent()
 				return m, nil
-			case "a":
-				// Open ChatGPT prompt
-				m.chatgptMode = true
-				m.chatgptInput.Focus()
-				m.chatgptInput.SetValue("")
-				m.updateContent()
-				return m, nil
 			case "tab", "shift+tab":
-				// Cycle through inputs (4 total: name, description, order, sql)
+				// Cycle through inputs (5 total: name, description, order, sql, ai-prompt)
 				if msg.String() == "tab" {
-					m.editFocus = (m.editFocus + 1) % 4
+					m.editFocus = (m.editFocus + 1) % 5
 				} else {
-					m.editFocus = (m.editFocus + 3) % 4
+					m.editFocus = (m.editFocus + 4) % 5
 				}
 
 				// Update focus
@@ -597,6 +614,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.descInput.Blur()
 				m.orderInput.Blur()
 				m.sqlTextarea.Blur()
+				m.aiPromptInput.Blur()
 
 				switch m.editFocus {
 				case 0:
@@ -607,6 +625,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.orderInput.Focus()
 				case 3:
 					m.sqlTextarea.Focus()
+				case 4:
+					m.aiPromptInput.Focus()
 				}
 				m.updateContent()
 				return m, nil
@@ -622,6 +642,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.orderInput, cmd = m.orderInput.Update(msg)
 				case 3:
 					m.sqlTextarea, cmd = m.sqlTextarea.Update(msg)
+				case 4:
+					// Handle AI prompt input
+					if msg.String() == "enter" && m.aiPromptInput.Value() != "" {
+						// Generate SQL from AI prompt
+						prompt := m.aiPromptInput.Value()
+
+						// Create current query context from the current form state
+						currentQuery := Query{
+							Name:        m.nameInput.Value(),
+							Description: m.descInput.Value(),
+							SQL:         m.sqlTextarea.Value(),
+						}
+
+						m.updateContent()
+						return m, m.callChatGPT(prompt, currentQuery)
+					}
+					m.aiPromptInput, cmd = m.aiPromptInput.Update(msg)
 				}
 				m.updateContent()
 				return m, cmd
@@ -890,17 +927,28 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.updateContent()
 	case chatgptResponseMsg:
-		// Handle successful ChatGPT response - store it for review
-		m.chatgptResponse = string(msg)
-		m.chatgptLoading = false
+		// Handle successful ChatGPT response
+		sql := string(msg)
+
+		// Always automatically update the SQL field and exit ChatGPT mode
+		if m.editMode {
+			m.sqlTextarea.SetValue(sql)
+			m.aiPromptInput.SetValue("") // Clear the prompt after successful generation
+			m.editFocus = 3              // Focus on SQL textarea
+			m.sqlTextarea.Focus()
+			m.nameInput.Blur()
+			m.descInput.Blur()
+			m.orderInput.Blur()
+			m.aiPromptInput.Blur()
+			m.chatgptInput.Blur()
+		}
+
 		m.updateContent()
 		return m, nil
 	case chatgptErrorMsg:
 		// Handle ChatGPT error
 		m.err = string(msg)
-		m.chatgptLoading = false
-		m.chatgptMode = false
-		m.chatgptResponse = ""
+
 		m.updateContent()
 		return m, nil
 	case tickMsg:
@@ -953,97 +1001,61 @@ func (m *Model) updateContent() {
 			}
 		}
 	} else if m.editMode {
-		if m.chatgptMode {
-			if m.chatgptResponse != "" {
-				content += ": Press 'c' to confirm and use this SQL, Esc to cancel\n\n"
-			} else {
-				content += ": Enter to generate SQL, Esc to cancel\n\n"
-			}
+		content += ": Tab to switch fields, Ctrl+S to save, 'a' for ChatGPT, Esc to cancel\n\n"
 
-			// ChatGPT prompt
-			content += lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("86")).
-				Render("ChatGPT SQL Generator") + "\n\n"
-
-			if m.chatgptLoading {
-				content += "Generating SQL query...\n\n"
-				content += lipgloss.NewStyle().
-					BorderStyle(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("240")).
-					Render(m.chatgptInput.View()) + "\n"
-			} else if m.chatgptResponse != "" {
-				// Show the original prompt (read-only)
-				content += "Your request:\n"
-				content += lipgloss.NewStyle().
-					BorderStyle(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("240")).
-					Render(m.chatgptInput.View()) + "\n\n"
-
-				// Show the generated SQL
-				content += "Generated SQL:\n"
-				sqlPreview := lipgloss.NewStyle().
-					BorderStyle(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("86")).
-					Padding(1).
-					Width(80)
-				content += sqlPreview.Render(m.chatgptResponse) + "\n"
-			} else {
-				content += "Describe what you want to query:\n"
-				content += lipgloss.NewStyle().
-					BorderStyle(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("86")).
-					Render(m.chatgptInput.View()) + "\n"
-			}
-		} else {
-			content += ": Tab to switch fields, Ctrl+S to save, 'a' for ChatGPT, Esc to cancel\n\n"
-
-			// Query editor
-			editorTitle := "Edit Query"
-			if m.editQuery.Name == "" {
-				editorTitle = "Create New Query"
-			}
-			content += lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("86")).
-				Render(editorTitle) + "\n\n"
-
-			// Name input
-			nameStyle := lipgloss.NewStyle()
-			if m.editFocus == 0 {
-				nameStyle = nameStyle.BorderStyle(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("86"))
-			}
-			content += "Name:\n" + nameStyle.Render(m.nameInput.View()) + "\n\n"
-
-			// Description input
-			descStyle := lipgloss.NewStyle()
-			if m.editFocus == 1 {
-				descStyle = descStyle.BorderStyle(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("86"))
-			}
-			content += "Description:\n" + descStyle.Render(m.descInput.View()) + "\n\n"
-
-			// Order input
-			orderStyle := lipgloss.NewStyle()
-			if m.editFocus == 2 {
-				orderStyle = orderStyle.BorderStyle(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("86"))
-			}
-			content += "Order Position (empty to hide from tabs):\n" + orderStyle.Render(m.orderInput.View()) + "\n\n"
-
-			// SQL textarea
-			sqlStyle := lipgloss.NewStyle()
-			if m.editFocus == 3 {
-				sqlStyle = sqlStyle.BorderStyle(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("86"))
-			}
-			content += "SQL:\n" + sqlStyle.Render(m.sqlTextarea.View()) + "\n"
+		// Query editor
+		editorTitle := "Edit Query"
+		if m.editQuery.Name == "" {
+			editorTitle = "Create New Query"
 		}
+		content += lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("86")).
+			Render(editorTitle) + "\n\n"
+
+		// Name input
+		nameStyle := lipgloss.NewStyle()
+		if m.editFocus == 0 {
+			nameStyle = nameStyle.BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("86"))
+		}
+		content += "Name:\n" + nameStyle.Render(m.nameInput.View()) + "\n\n"
+
+		// Description input
+		descStyle := lipgloss.NewStyle()
+		if m.editFocus == 1 {
+			descStyle = descStyle.BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("86"))
+		}
+		content += "Description:\n" + descStyle.Render(m.descInput.View()) + "\n\n"
+
+		// Order input
+		orderStyle := lipgloss.NewStyle()
+		if m.editFocus == 2 {
+			orderStyle = orderStyle.BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("86"))
+		}
+		content += "Order Position (empty to hide from tabs):\n" + orderStyle.Render(m.orderInput.View()) + "\n\n"
+
+		// SQL textarea
+		sqlStyle := lipgloss.NewStyle()
+		if m.editFocus == 3 {
+			sqlStyle = sqlStyle.BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("86"))
+		}
+		content += "SQL:\n" + sqlStyle.Render(m.sqlTextarea.View()) + "\n\n"
+
+		// AI prompt input
+		aiStyle := lipgloss.NewStyle()
+		if m.editFocus == 4 {
+			aiStyle = aiStyle.BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("86"))
+		}
+		content += "AI Prompt:\n" + aiStyle.Render(m.aiPromptInput.View()) + "\n"
 	} else {
 		content += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(": Press ? for help\n")
 
-		// Query list
+		// Query listt
 		content += "\n "
 		for i, query := range m.queries {
 			var queryText string
