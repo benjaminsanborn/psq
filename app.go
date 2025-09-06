@@ -367,6 +367,52 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			switch msg.String() {
+			case "ctrl+d":
+				// Delete the query (only for existing queries, not new ones)
+				if m.editQuery.Name != "" {
+					if globalQueryDB != nil {
+						if err := globalQueryDB.DeleteQuery(m.editQuery.Name); err != nil {
+							m.err = fmt.Sprintf("Failed to delete query: %v", err)
+							m.updateContent()
+							return m, nil
+						} else {
+							// Remove from temporary queries if it was temporary
+							if m.isTemporaryQuery(m.editQuery.Name) {
+								delete(m.tempQueries, m.editQuery.Name)
+							}
+
+							// Reload queries
+							queries, err := loadQueries()
+							if err != nil {
+								m.err = fmt.Sprintf("Failed to reload queries: %v", err)
+								m.updateContent()
+								return m, nil
+							} else {
+								m.queries = queries
+								// Also reload all queries for search
+								if allQueries, err := globalQueryDB.LoadAllQueries(); err == nil {
+									m.allQueries = allQueries
+								}
+
+								// Adjust selection if needed
+								if m.previousSelected >= len(m.queries) && len(m.queries) > 0 {
+									m.previousSelected = len(m.queries) - 1
+								}
+
+								m.editMode = false
+								// Restore previous selection
+								if m.previousSelected < len(m.queries) {
+									m.selected = m.previousSelected
+								}
+								m.ensureValidSelection()
+								m.updateContent()
+								return m, nil
+							}
+						}
+					}
+				}
+				m.updateContent()
+				return m, nil
 			case "ctrl+s":
 				// Save the query
 				newQuery := Query{
@@ -835,7 +881,7 @@ func (m *Model) updateContent() {
 			}
 		}
 	} else if m.editMode {
-		content += ": Tab to switch fields, Ctrl+S to save, Esc to cancel\n\n"
+		content += ": Tab to switch fields, Ctrl+S to save, Ctrl+D to delete, Esc to cancel\n\n"
 
 		// Query editor
 		editorTitle := "Edit Query"
@@ -982,6 +1028,7 @@ func (m *Model) customHelpView() string {
 	helpText.WriteString(keyStyle.Render("s") + " " + descStyle.Render("search queries (type to filter, ↑/↓ navigate, enter select, esc cancel)") + "\n")
 	helpText.WriteString(keyStyle.Render("e") + " " + descStyle.Render("edit query") + "\n")
 	helpText.WriteString(keyStyle.Render("n") + " " + descStyle.Render("new query") + "\n")
+	helpText.WriteString(keyStyle.Render("ctrl+d") + " " + descStyle.Render("delete query (in edit mode)") + "\n")
 	helpText.WriteString(keyStyle.Render("a") + " " + descStyle.Render("chatgpt prompt (in new/edit mode)") + "\n")
 	helpText.WriteString(keyStyle.Render("c") + " " + descStyle.Render("confirm chatgpt response") + "\n")
 	helpText.WriteString(keyStyle.Render("d") + " " + descStyle.Render("dump queries") + "\n")
