@@ -3,6 +3,7 @@ module psq
 go 1.23.0
 
 require (
+	github.com/NimbleMarkets/ntcharts v0.3.1
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.6
 	github.com/charmbracelet/lipgloss v1.1.0

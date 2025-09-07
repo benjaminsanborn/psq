@@ -35,7 +35,7 @@ func (m *Model) runQuery(query Query) tea.Cmd {
 		}
 		defer db.Close()
 
-		result, err := executeQuery(db, query.SQL)
+		result, err := renderConnectionBarChart(db, query.SQL, query.Name)
 		if err != nil {
 			return queryErrorMsg(fmt.Sprintf("Query failed: %v", err))
 		}

@@ -230,3 +230,11 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 
 	return t.View(), nil
 }
+
+func renderConnectionBarChart(db *sql.DB, query string, queryName string) (string, error) {
+	// Only render charts for the Home query
+	if IsHomeTab(queryName) {
+		return RenderHomeChart(db, query)
+	}
+	return executeQuery(db, query)
+}

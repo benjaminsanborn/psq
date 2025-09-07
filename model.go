@@ -75,7 +75,7 @@ type chatgptErrorMsg string
 type tickMsg time.Time
 
 func NewModel(service string) *Model {
-	queries, err := loadQueries()
+	dbQueries, err := loadQueries()
 	if err != nil {
 		return &Model{
 			queries:     []Query{},
@@ -88,11 +88,17 @@ func NewModel(service string) *Model {
 		}
 	}
 
-	// Also load all queries (including hidden ones) for search
+	// Create hardcoded Home tab as first query
+	homeQuery := HomeQuery()
+
+	// Combine Home tab with database queries
+	queries := append([]Query{homeQuery}, dbQueries...)
+
+	// Also load all queries (including hidden ones) for search, but include Home
 	allQueries := queries
 	if globalQueryDB != nil {
 		if allQueriesFromDB, err := globalQueryDB.LoadAllQueries(); err == nil {
-			allQueries = allQueriesFromDB
+			allQueries = append([]Query{homeQuery}, allQueriesFromDB...)
 		}
 	}
 
