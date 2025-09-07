@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/evertras/bubble-table/table"
@@ -231,10 +232,37 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 	return t.View(), nil
 }
 
-func renderConnectionBarChart(db *sql.DB, query string, queryName string) (string, error) {
+func renderConnectionBarChart(db *sql.DB, query string, queryName string, model *Model) (string, error) {
 	// Only render charts for the Home query
 	if IsHomeTab(queryName) {
-		return RenderHomeChart(db, query)
+		// Get the bar chart
+		barChart, err := RenderHomeChart(db, query)
+		if err != nil {
+			return "", err
+		}
+
+		// Update sparkline data with transaction commits
+		currentCommits, err := GetTransactionCommits(db)
+		if err != nil {
+			// If we can't get commits, just show the bar chart
+			return barChart, nil
+		}
+
+		// Calculate commits per second (rate of change)
+		var commitsPerSec float64
+		if model.lastCommits > 0 {
+			commitsPerSec = currentCommits - model.lastCommits
+		}
+		model.lastCommits = currentCommits
+
+		// Add data point to sparkline
+		model.sparklineData.AddPoint(commitsPerSec, time.Now())
+
+		// Render sparkline chart
+		sparklineChart := RenderSparklineChart(model.sparklineData)
+
+		// Combine both charts side by side
+		return RenderHomeLayout(barChart, sparklineChart), nil
 	}
 	return executeQuery(db, query)
 }

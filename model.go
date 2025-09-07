@@ -41,6 +41,8 @@ type Model struct {
 	chatgptResponse  string // Store the generated SQL for review
 	help             help.Model
 	showHelp         bool
+	sparklineData    *SparklineData // Transaction commits sparkline data
+	lastCommits      float64        // Last transaction commit count for rate calculation
 }
 
 type Query struct {
@@ -116,6 +118,8 @@ func NewModel(service string) *Model {
 		editMode:        false,
 		help:            help.New(),
 		showHelp:        false,
+		sparklineData:   NewSparklineData(60), // Keep 60 data points (1 minute at 1 second intervals)
+		lastCommits:     0,
 	}
 }
 

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
+	"github.com/NimbleMarkets/ntcharts/sparkline"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -116,21 +118,138 @@ func RenderHomeChart(db *sql.DB, query string) (string, error) {
 
 	// Create the bar chart
 	bc := barchart.New(
-		60, 5,
+		40, 5,
 		barchart.WithDataSet(chartData),            // Your data
 		barchart.WithStyles(axisStyle, labelStyle), // Style axis & labels
 		barchart.WithHorizontalBars(),              // Horizontal bar layout
 	)
 
-	// Draw the chart
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("86")).
+		MarginBottom(1)
+
 	bc.Draw()
 
-	chartView := bc.View()
+	// Calculate total connections
+	totalConnectionsCount := 0
+	for _, bar := range chartData {
+		totalConnectionsCount += int(bar.Values[0].Value)
+	}
+	title := fmt.Sprintf("Connections (%d)", totalConnectionsCount)
+	result := titleStyle.Render(title) + "\n" + bc.View()
 
-	return chartView, nil
+	return result, nil
 }
 
 // IsHomeTab checks if the given query is the Home tab
 func IsHomeTab(queryName string) bool {
 	return queryName == "Home"
+}
+
+// SparklineData holds the transaction commit data over time
+type SparklineData struct {
+	Values     []float64
+	Timestamps []time.Time
+	MaxPoints  int
+}
+
+// NewSparklineData creates a new sparkline data structure
+func NewSparklineData(maxPoints int) *SparklineData {
+	return &SparklineData{
+		Values:     make([]float64, 0, maxPoints),
+		Timestamps: make([]time.Time, 0, maxPoints),
+		MaxPoints:  maxPoints,
+	}
+}
+
+// AddPoint adds a new data point to the sparkline
+func (s *SparklineData) AddPoint(value float64, timestamp time.Time) {
+	s.Values = append(s.Values, value)
+	s.Timestamps = append(s.Timestamps, timestamp)
+
+	// Keep only the last MaxPoints
+	if len(s.Values) > s.MaxPoints {
+		s.Values = s.Values[1:]
+		s.Timestamps = s.Timestamps[1:]
+	}
+}
+
+// GetTransactionCommits queries the database for transaction commits
+func GetTransactionCommits(db *sql.DB) (float64, error) {
+	var commits float64
+	err := db.QueryRow("SELECT SUM(xact_commit) FROM pg_stat_database").Scan(&commits)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query transaction commits: %w", err)
+	}
+	return commits, nil
+}
+
+// RenderSparklineChart renders the transaction commits sparkline
+func RenderSparklineChart(sparklineData *SparklineData) string {
+	if len(sparklineData.Values) == 0 {
+		return "No data yet..."
+	}
+
+	// Get the latest value (current transactions per second)
+	currentTPS := sparklineData.Values[len(sparklineData.Values)-1]
+
+	// Create sparkline chart
+	sl := sparkline.New(40, 5)
+	for _, value := range sparklineData.Values {
+		sl.Push(value)
+	}
+	sl.Draw()
+
+	// Add title with current TPS count
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("86")).
+		MarginBottom(1)
+
+	title := fmt.Sprintf("Transactions/sec (%.1f)", currentTPS)
+	result := titleStyle.Render(title) + "\n" + sl.View()
+	return result
+}
+
+// RenderHomeLayout renders both the bar chart and sparkline side by side
+func RenderHomeLayout(barChart, sparklineChart string) string {
+	// Split the charts into lines for side-by-side layout
+	barLines := strings.Split(barChart, "\n")
+	sparkLines := strings.Split(sparklineChart, "\n")
+
+	// Determine the maximum number of lines
+	maxLines := len(barLines)
+	if len(sparkLines) > maxLines {
+		maxLines = len(sparkLines)
+	}
+
+	// Pad shorter chart with empty lines
+	for len(barLines) < maxLines {
+		barLines = append(barLines, "")
+	}
+	for len(sparkLines) < maxLines {
+		sparkLines = append(sparkLines, "")
+	}
+
+	// Create side-by-side layout with padding
+	var result strings.Builder
+	padding := strings.Repeat(" ", 5) // 5 spaces between charts
+
+	for i := 0; i < maxLines; i++ {
+		// Ensure consistent width for the bar chart (pad to 65 characters)
+		barLine := barLines[i]
+		if len(barLine) < 65 {
+			barLine += strings.Repeat(" ", 65-len(barLine))
+		}
+
+		result.WriteString(barLine)
+		result.WriteString(padding)
+		result.WriteString(sparkLines[i])
+		if i < maxLines-1 {
+			result.WriteString("\n")
+		}
+	}
+
+	return result.String()
 }
