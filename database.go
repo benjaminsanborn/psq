@@ -235,8 +235,11 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 func renderConnectionBarChart(db *sql.DB, query string, queryName string, model *Model) (string, error) {
 	// Only render charts for the Home query
 	if IsHomeTab(queryName) {
-		// Get the bar chart
-		barChart, err := RenderHomeChart(db, query)
+		// Calculate chart width for responsive rendering
+		chartWidth := GetChartWidth(model.width)
+
+		// Get the bar chart with responsive width
+		barChart, err := RenderHomeChart(db, query, chartWidth)
 		if err != nil {
 			return "", err
 		}
@@ -258,11 +261,18 @@ func renderConnectionBarChart(db *sql.DB, query string, queryName string, model 
 		// Add data point to sparkline
 		model.sparklineData.AddPoint(commitsPerSec, time.Now())
 
-		// Render sparkline chart
-		sparklineChart := RenderSparklineChart(model.sparklineData)
+		// Render sparkline chart with responsive width
+		sparklineChart := RenderSparklineChart(model.sparklineData, chartWidth)
 
-		// Combine both charts in side-by-side blocks
-		return RenderHomeSideBySide(barChart, sparklineChart, model.width), nil
+		// Render active connections table
+		activeTable, err := RenderActiveConnectionsTable(db)
+		if err != nil {
+			// If table fails, just show charts without table
+			return RenderHomeSideBySide(barChart, sparklineChart, model.width), nil
+		}
+
+		// Combine charts and table in vertical layout
+		return RenderHomeWithTable(barChart, sparklineChart, activeTable, model.width), nil
 	}
 	return executeQuery(db, query)
 }
