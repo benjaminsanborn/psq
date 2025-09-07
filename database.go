@@ -261,8 +261,8 @@ func renderConnectionBarChart(db *sql.DB, query string, queryName string, model 
 		// Render sparkline chart
 		sparklineChart := RenderSparklineChart(model.sparklineData)
 
-		// Combine both charts side by side
-		return RenderHomeLayout(barChart, sparklineChart), nil
+		// Combine both charts in side-by-side blocks
+		return RenderHomeSideBySide(barChart, sparklineChart, model.width), nil
 	}
 	return executeQuery(db, query)
 }

@@ -212,44 +212,29 @@ func RenderSparklineChart(sparklineData *SparklineData) string {
 	return result
 }
 
-// RenderHomeLayout renders both the bar chart and sparkline side by side
-func RenderHomeLayout(barChart, sparklineChart string) string {
-	// Split the charts into lines for side-by-side layout
-	barLines := strings.Split(barChart, "\n")
-	sparkLines := strings.Split(sparklineChart, "\n")
+// RenderHomeSideBySide renders both charts in side-by-side blocks
+func RenderHomeSideBySide(barChart, sparklineChart string, width int) string {
+	// Calculate half width for each chart
+	halfWidth := (width - 8) / 2 // Leave some padding
 
-	// Determine the maximum number of lines
-	maxLines := len(barLines)
-	if len(sparkLines) > maxLines {
-		maxLines = len(sparkLines)
-	}
+	// Create styled blocks for each chart
+	leftStyle := lipgloss.NewStyle().
+		Width(halfWidth).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(1).
+		MarginRight(2)
 
-	// Pad shorter chart with empty lines
-	for len(barLines) < maxLines {
-		barLines = append(barLines, "")
-	}
-	for len(sparkLines) < maxLines {
-		sparkLines = append(sparkLines, "")
-	}
+	rightStyle := lipgloss.NewStyle().
+		Width(halfWidth).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(1)
 
-	// Create side-by-side layout with padding
-	var result strings.Builder
-	padding := strings.Repeat(" ", 5) // 5 spaces between charts
-
-	for i := 0; i < maxLines; i++ {
-		// Ensure consistent width for the bar chart (pad to 65 characters)
-		barLine := barLines[i]
-		if len(barLine) < 65 {
-			barLine += strings.Repeat(" ", 65-len(barLine))
-		}
-
-		result.WriteString(barLine)
-		result.WriteString(padding)
-		result.WriteString(sparkLines[i])
-		if i < maxLines-1 {
-			result.WriteString("\n")
-		}
-	}
-
-	return result.String()
+	// Render charts in styled blocks side by side
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		leftStyle.Render(barChart),
+		rightStyle.Render(sparklineChart),
+	)
 }
