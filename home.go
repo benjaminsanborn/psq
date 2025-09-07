@@ -264,8 +264,7 @@ func RenderHomeWithTable(barChart, sparklineChart, activeTable string, width int
 		Width(width - 4).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
-		Padding(1).
-		MarginTop(1)
+		Padding(1)
 
 	// Combine charts and table vertically
 	return lipgloss.JoinVertical(
