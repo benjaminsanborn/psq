@@ -14,9 +14,7 @@ import (
 )
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
+	return nil
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
