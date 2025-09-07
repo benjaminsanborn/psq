@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/evertras/bubble-table/table"
@@ -229,4 +230,49 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 			Render("NULL"))
 
 	return t.View(), nil
+}
+
+func renderConnectionBarChart(db *sql.DB, query string, queryName string, model *Model) (string, error) {
+	// Only render charts for the Home query
+	if IsHomeTab(queryName) {
+		// Calculate chart width for responsive rendering
+		chartWidth := GetChartWidth(model.width)
+
+		// Get the bar chart with responsive width
+		barChart, err := RenderHomeChart(db, query, chartWidth)
+		if err != nil {
+			return "", err
+		}
+
+		// Update sparkline data with transaction commits
+		currentCommits, err := GetTransactionCommits(db)
+		if err != nil {
+			// If we can't get commits, just show the bar chart
+			return barChart, nil
+		}
+
+		// Calculate commits per second (rate of change)
+		var commitsPerSec float64
+		if model.lastCommits > 0 {
+			commitsPerSec = currentCommits - model.lastCommits
+		}
+		model.lastCommits = currentCommits
+
+		// Add data point to sparkline
+		model.sparklineData.AddPoint(commitsPerSec, time.Now())
+
+		// Render sparkline chart with responsive width
+		sparklineChart := RenderSparklineChart(model.sparklineData, chartWidth)
+
+		// Render active connections table
+		activeTable, err := RenderActiveConnectionsTable(db)
+		if err != nil {
+			// If table fails, just show charts without table
+			return RenderHomeSideBySide(barChart, sparklineChart, model.width), nil
+		}
+
+		// Combine charts and table in vertical layout
+		return RenderHomeWithTable(barChart, sparklineChart, activeTable, model.width), nil
+	}
+	return executeQuery(db, query)
 }

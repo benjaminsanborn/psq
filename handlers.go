@@ -250,6 +250,10 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		if len(m.queries) > 0 {
 			m.ensureValidSelection()
+			// Don't allow editing the hardcoded Home tab
+			if m.selected == 0 && IsHomeTab(m.queries[0].Name) {
+				return m, nil
+			}
 			m.previousSelected = m.selected
 			m.editMode = true
 			m.editQuery = m.queries[m.selected]

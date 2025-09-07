@@ -41,6 +41,8 @@ type Model struct {
 	chatgptResponse  string // Store the generated SQL for review
 	help             help.Model
 	showHelp         bool
+	sparklineData    *SparklineData // Transaction commits sparkline data
+	lastCommits      float64        // Last transaction commit count for rate calculation
 }
 
 type Query struct {
@@ -75,7 +77,7 @@ type chatgptErrorMsg string
 type tickMsg time.Time
 
 func NewModel(service string) *Model {
-	queries, err := loadQueries()
+	dbQueries, err := loadQueries()
 	if err != nil {
 		return &Model{
 			queries:     []Query{},
@@ -88,11 +90,17 @@ func NewModel(service string) *Model {
 		}
 	}
 
-	// Also load all queries (including hidden ones) for search
+	// Create hardcoded Home tab as first query
+	homeQuery := HomeQuery()
+
+	// Combine Home tab with database queries
+	queries := append([]Query{homeQuery}, dbQueries...)
+
+	// Also load all queries (including hidden ones) for search, but include Home
 	allQueries := queries
 	if globalQueryDB != nil {
 		if allQueriesFromDB, err := globalQueryDB.LoadAllQueries(); err == nil {
-			allQueries = allQueriesFromDB
+			allQueries = append([]Query{homeQuery}, allQueriesFromDB...)
 		}
 	}
 
@@ -110,6 +118,8 @@ func NewModel(service string) *Model {
 		editMode:        false,
 		help:            help.New(),
 		showHelp:        false,
+		sparklineData:   NewSparklineData(60), // Keep 60 data points (1 minute at 1 second intervals)
+		lastCommits:     0,
 	}
 }
 
