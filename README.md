@@ -1,6 +1,6 @@
 # psq - postgres status query
 
-Postgres monitoring in the CLI.
+Postgres monitoring in the CLI. Partially inspired from the old UI of PgAdmin.
 
 ## Features
 
