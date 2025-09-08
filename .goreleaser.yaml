@@ -45,6 +45,27 @@ changelog:
       - "^docs:"
       - "^test:"
 
+brews:
+  -
+    name: psq 
+    commit_author:
+      name: benjaminsanborn
+      email: benjaminsanborn@gmail.com 
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    directory: Formula
+    description: "lightweight postgres monitor for the terminal"
+    license: "Apache-2.0"
+    install: |
+      bin.install "psq"
+    test: |
+      system "#{bin}/psq --version"
+    # Repository to push the generated files to.
+    repository:
+      owner: benjaminsanborn 
+      name: homebrew-psq
+      branch: main
+      token: "{{ .Env.GITHUB_TOKEN }}"
+
 release:
   footer: >-
 
