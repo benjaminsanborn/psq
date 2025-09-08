@@ -36,19 +36,25 @@ func main() {
 					os.Exit(1)
 				}
 			} else {
-				// Show service picker
-				picker := NewServicePicker()
-				selectedService, err := picker.Run()
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-					os.Exit(1)
-				}
-				if selectedService != "" {
+				// Show service picker in a loop to allow returning
+				for {
+					picker := NewServicePicker()
+					selectedService, err := picker.Run()
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						os.Exit(1)
+					}
+					if selectedService == "" {
+						// User quit from picker
+						break
+					}
+
 					app := NewApp(selectedService)
 					if err := app.Run(); err != nil {
 						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 						os.Exit(1)
 					}
+					// App exited normally, return to picker
 				}
 			}
 		},

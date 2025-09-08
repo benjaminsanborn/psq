@@ -35,6 +35,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleChatGPTErrorMsg(msg)
 	case tickMsg:
 		return m.handleTickMsg()
+	case returnToPickerMsg:
+		return m, tea.Quit
 	}
 
 	return m, nil
@@ -183,6 +185,10 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "esc", "ctrl+c":
 		return m, tea.Quit
+	case "c":
+		return m, func() tea.Msg {
+			return returnToPickerMsg{}
+		}
 
 	case "s":
 		m.previousSelected = m.selected

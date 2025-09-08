@@ -75,6 +75,7 @@ type Choice struct {
 type chatgptResponseMsg string
 type chatgptErrorMsg string
 type tickMsg time.Time
+type returnToPickerMsg struct{}
 
 func NewModel(service string) *Model {
 	dbQueries, err := loadQueries()

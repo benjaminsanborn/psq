@@ -222,13 +222,13 @@ func (m *Model) customHelpView() string {
 	helpText.WriteString(keyStyle.Render("n") + " " + descStyle.Render("new query") + "\n")
 	helpText.WriteString(keyStyle.Render("ctrl+d") + " " + descStyle.Render("delete query (in edit mode)") + "\n")
 	helpText.WriteString(keyStyle.Render("a") + " " + descStyle.Render("chatgpt prompt (in new/edit mode)") + "\n")
-	helpText.WriteString(keyStyle.Render("c") + " " + descStyle.Render("confirm chatgpt response") + "\n")
 	helpText.WriteString(keyStyle.Render("d") + " " + descStyle.Render("dump queries") + "\n")
 	helpText.WriteString(keyStyle.Render("x") + " " + descStyle.Render("psql prompt") + "\n\n")
 
 	// System
 	helpText.WriteString(titleStyle.Render("System:") + "\n")
 	helpText.WriteString(keyStyle.Render("?") + " " + descStyle.Render("toggle help") + "\n")
+	helpText.WriteString(keyStyle.Render("c") + " " + descStyle.Render("return to connection picker") + "\n")
 	helpText.WriteString(keyStyle.Render("esc") + " " + descStyle.Render("quit") + "\n")
 
 	return helpText.String()
