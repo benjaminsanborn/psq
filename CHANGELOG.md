@@ -1,3 +1,10 @@
+## [1.3.2](https://github.com/benjaminsanborn/psq/compare/v1.3.1...v1.3.2) (2025-09-08)
+
+
+### Bug Fixes
+
+* remove cgo dependency ([a323645](https://github.com/benjaminsanborn/psq/commit/a3236455dcd0ac37a99d7b7ac3454c7a48321c1f))
+
 ## [1.3.1](https://github.com/benjaminsanborn/psq/compare/v1.3.0...v1.3.1) (2025-09-08)
 
 
