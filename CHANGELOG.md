@@ -1,3 +1,10 @@
+## [1.3.1](https://github.com/benjaminsanborn/psq/compare/v1.3.0...v1.3.1) (2025-09-08)
+
+
+### Bug Fixes
+
+* C_GO flag ([085c12d](https://github.com/benjaminsanborn/psq/commit/085c12d07c0c6968974ce26cfdb91fd7ad4a6640))
+
 # [1.3.0](https://github.com/benjaminsanborn/psq/compare/v1.2.0...v1.3.0) (2025-09-08)
 
 
