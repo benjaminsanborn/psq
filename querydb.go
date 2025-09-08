@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 type QueryDB struct {
@@ -23,7 +23,7 @@ func NewQueryDB() (*QueryDB, error) {
 	dbPath := filepath.Join(configDir, "queries.db")
 
 	// Connect to SQLite database
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -404,7 +404,7 @@ func (qdb *QueryDB) GetQuery(name string) (Query, error) {
 
 func (qdb *QueryDB) DumpToFile(filePath string) error {
 	// Create the dump database
-	dumpDB, err := sql.Open("sqlite3", filePath)
+	dumpDB, err := sql.Open("sqlite", filePath)
 	if err != nil {
 		return fmt.Errorf("failed to create dump database: %w", err)
 	}
@@ -463,7 +463,7 @@ func (qdb *QueryDB) LoadFromDumpFile(filePath string) error {
 	}
 
 	// Open the dump database
-	dumpDB, err := sql.Open("sqlite3", filePath)
+	dumpDB, err := sql.Open("sqlite", filePath)
 	if err != nil {
 		return fmt.Errorf("failed to open dump database: %w", err)
 	}
