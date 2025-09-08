@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/benjaminsanborn/psq/compare/v1.2.0...v1.3.0) (2025-09-08)
+
+
+### Features
+
+* homebrew tap ([bea76bd](https://github.com/benjaminsanborn/psq/commit/bea76bd7b4c567ee3386f041f04b34c869457449))
+
 # [1.2.0](https://github.com/benjaminsanborn/psq/compare/v1.1.1...v1.2.0) (2025-09-08)
 
 
