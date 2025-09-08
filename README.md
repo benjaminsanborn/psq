@@ -49,4 +49,4 @@ Run the monitoring interface:
 
 - Go 1.21+
 - `~/.pg_service.conf` file with database connection details
-- $OPENAI_API_KEY environment variable, for query generation
+- `$OPENAI_API_KEY` environment variable, for query generation
