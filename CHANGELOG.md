@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/benjaminsanborn/psq/compare/v1.3.2...v1.4.0) (2025-09-10)
+
+
+### Features
+
+* use 5 mini now ([82b6cdd](https://github.com/benjaminsanborn/psq/commit/82b6cdd9c385712fbb1c8962ed6cb7b7825920dd))
+
 ## [1.3.2](https://github.com/benjaminsanborn/psq/compare/v1.3.1...v1.3.2) (2025-09-08)
 
 
