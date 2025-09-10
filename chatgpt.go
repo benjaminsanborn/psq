@@ -27,11 +27,11 @@ func (m *Model) callChatGPT(prompt string) tea.Cmd {
 		if currentSQL != "" {
 			fullPrompt = fmt.Sprintf("Modify the following PostgreSQL query based on this request: %s\n\nCurrent query:\n%s\n\nPlease respond with ONLY the modified SQL query, no explanations or additional text.", prompt, currentSQL)
 		} else {
-			fullPrompt = fmt.Sprintf("Generate a PostgreSQL query for the following request: %s\n\nPlease respond with ONLY the SQL query, no explanations or additional text.", prompt)
+			fullPrompt = fmt.Sprintf("Generate a PostgreSQL query for the following request: %s\n\nPlease respond with ONLY the SQL query, no explanations or additional text. Use the documentation available at https://www.postgresql.org/docs/current/index.html to provide a validated query that will work against the current major version.", prompt)
 		}
 
 		reqBody := ChatGPTRequest{
-			Model: "gpt-3.5-turbo",
+			Model: "gpt-5-mini",
 			Messages: []Message{
 				{
 					Role:    "user",
