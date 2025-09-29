@@ -60,7 +60,7 @@ Output demo.gif
 Require echo
 Require psq
 Set Shell "bash"
-Set FontSize 32
+Set FontSize 24 
 Set Width 1200
 Set Height 600
 
@@ -76,7 +76,7 @@ Right
 Sleep 1s
 Type "s"
 Sleep 500ms
-Type "Table Size" 
+Type "Top Queries" 
 Sleep 500ms
 Enter 
 Sleep 500ms

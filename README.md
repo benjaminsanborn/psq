@@ -1,7 +1,7 @@
 # > psq
 
 Postgres monitoring in the CLI. Partially inspired from the old UI of PgAdmin.
-![Made with VHS](https://vhs.charm.sh/vhs-TLXlgU5wqp7tjiBPWHsAE.gif)
+![Made with VHS](https://vhs.charm.sh/vhs-5cK5mfgMlRZXM2f5elnpfs.gif)
 
 ## Install
 
