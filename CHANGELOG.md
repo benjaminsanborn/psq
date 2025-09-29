@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/benjaminsanborn/psq/compare/v1.4.0...v1.5.0) (2025-09-29)
+
+
+### Features
+
+* add gif and cleanup home ([30b89ce](https://github.com/benjaminsanborn/psq/commit/30b89ce490bd7e7ae9e269d3d7959aac01a62bde))
+
 # [1.4.0](https://github.com/benjaminsanborn/psq/compare/v1.3.2...v1.4.0) (2025-09-10)
 
 
