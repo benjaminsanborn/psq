@@ -63,7 +63,7 @@ func (m *Model) updateContent() {
 }
 
 func (m *Model) renderSearchMode() string {
-	content := "\nSearch: " + m.searchQuery + "█\n\n"
+	content := "\n Search: " + m.searchQuery + "█\n\n"
 
 	// Display filtered queries
 	if len(m.filteredQueries) == 0 {

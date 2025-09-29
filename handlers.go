@@ -230,13 +230,9 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Results viewport scrolling
 	case "up", "k":
-		m.viewport.LineUp(1)
+		m.viewport.ScrollUp(1)
 	case "down", "j":
-		m.viewport.LineDown(1)
-	case "pageup":
-		m.viewport.HalfViewUp()
-	case "pagedown":
-		m.viewport.HalfViewDown()
+		m.viewport.ScrollDown(1)
 	case "home":
 		m.viewport.GotoTop()
 	case "end":

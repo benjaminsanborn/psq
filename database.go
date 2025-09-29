@@ -264,15 +264,8 @@ func renderConnectionBarChart(db *sql.DB, query string, queryName string, model 
 		// Render sparkline chart with responsive width
 		sparklineChart := RenderSparklineChart(model.sparklineData, chartWidth)
 
-		// Render active connections table
-		activeTable, err := RenderActiveConnectionsTable(db)
-		if err != nil {
-			// If table fails, just show charts without table
-			return RenderHomeSideBySide(barChart, sparklineChart, model.width), nil
-		}
-
 		// Combine charts and table in vertical layout
-		return RenderHomeWithTable(barChart, sparklineChart, activeTable, model.width), nil
+		return RenderHomeSideBySide(barChart, sparklineChart, model.width), nil
 	}
 	return executeQuery(db, query)
 }

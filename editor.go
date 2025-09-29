@@ -128,7 +128,12 @@ func (m *Model) handleDeleteQuery() (tea.Model, tea.Cmd) {
 func (m *Model) handleSaveQuery() (tea.Model, tea.Cmd) {
 	// Save the query
 	newQuery := Query{
-		Name:        m.nameInput.Value(),
+		Name: func() string {
+			if m.nameInput.Value() == "" {
+				return "New Query"
+			}
+			return m.nameInput.Value()
+		}(),
 		Description: m.descInput.Value(),
 		SQL:         m.sqlTextarea.Value(),
 	}

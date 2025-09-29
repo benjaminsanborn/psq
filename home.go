@@ -10,7 +10,6 @@ import (
 	"github.com/NimbleMarkets/ntcharts/barchart"
 	"github.com/NimbleMarkets/ntcharts/sparkline"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/evertras/bubble-table/table"
 )
 
 // HomeQuery returns the hardcoded Home query
@@ -230,21 +229,19 @@ func RenderSparklineChart(sparklineData *SparklineData, chartWidth int) string {
 // RenderHomeSideBySide renders both charts in side-by-side blocks
 func RenderHomeSideBySide(barChart, sparklineChart string, width int) string {
 	// Calculate half width for each chart
-	halfWidth := (width - 8) / 2 // Leave some padding
+	halfWidth := GetChartWidth(width)
 
 	// Create styled blocks for each chart
 	leftStyle := lipgloss.NewStyle().
 		Width(halfWidth).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
-		Padding(1).
 		MarginRight(2)
 
 	rightStyle := lipgloss.NewStyle().
 		Width(halfWidth).
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
-		Padding(1)
+		BorderForeground(lipgloss.Color("62"))
 
 	// Render charts in styled blocks side by side
 	return lipgloss.JoinHorizontal(
@@ -277,132 +274,4 @@ func RenderHomeWithTable(barChart, sparklineChart, activeTable string, width int
 // GetChartWidth calculates the width available for each chart
 func GetChartWidth(totalWidth int) int {
 	return (totalWidth - 8) / 2 // Half width minus padding
-}
-
-// RenderActiveConnectionsTable renders the active connections table
-func RenderActiveConnectionsTable(db *sql.DB) (string, error) {
-	// Active query SQL (copied from querydb.go)
-	activeQuery := "SELECT pid, LEFT(query,50) AS query, LEFT(usename,8) AS name, LEFT(state,10) AS state, LEFT((NOW() - query_start)::text,8) as age, wait_event_type FROM pg_stat_activity WHERE state IS NOT NULL AND state != 'idle' ORDER BY NOW() - query_start DESC;"
-
-	rows, err := db.Query(activeQuery)
-	if err != nil {
-		return "", fmt.Errorf("failed to execute active connections query: %w", err)
-	}
-	defer rows.Close()
-
-	columns, err := rows.Columns()
-	if err != nil {
-		return "", fmt.Errorf("failed to get columns: %w", err)
-	}
-
-	// Collect all data
-	var allRows [][]string
-	values := make([]interface{}, len(columns))
-	valuePtrs := make([]interface{}, len(columns))
-	for i := range values {
-		valuePtrs[i] = &values[i]
-	}
-
-	for rows.Next() {
-		if err := rows.Scan(valuePtrs...); err != nil {
-			return "", fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		row := make([]string, len(columns))
-		for i, val := range values {
-			if val == nil {
-				row[i] = "NULL"
-			} else {
-				// Handle byte arrays (convert to string)
-				if bytes, ok := val.([]byte); ok {
-					row[i] = strings.ReplaceAll(string(bytes), "\n", " ")
-				} else {
-					row[i] = strings.ReplaceAll(fmt.Sprintf("%v", val), "\n", " ")
-				}
-			}
-		}
-		allRows = append(allRows, row)
-	}
-
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("error iterating rows: %w", err)
-	}
-
-	// Create bubble-table
-	if len(allRows) == 0 {
-		return "No active connections", nil
-	}
-
-	// Calculate column widths
-	colWidths := make([]int, len(columns))
-	for i, col := range columns {
-		colWidths[i] = len(col) + 2 // Start with header width + padding
-	}
-
-	for _, row := range allRows {
-		for i, cell := range row {
-			if len(cell)+2 > colWidths[i] {
-				colWidths[i] = len(cell) + 2
-			}
-		}
-	}
-
-	// Create table columns with calculated widths
-	var tableColumns []table.Column
-	for i, col := range columns {
-		// Limit maximum column width to prevent extremely wide columns
-		maxWidth := colWidths[i]
-		if maxWidth > 50 {
-			maxWidth = 50
-		}
-		if maxWidth < 8 {
-			maxWidth = 8
-		}
-		tableColumns = append(tableColumns, table.NewColumn(col, col, maxWidth).WithFiltered(true))
-	}
-
-	// Create table rows with the collected data (limit to first 10 for space)
-	maxRows := 50
-	if len(allRows) > maxRows {
-		allRows = allRows[:maxRows]
-	}
-
-	var tableRows []table.Row
-	for _, row := range allRows {
-		rowData := table.RowData{}
-		for i, cellValue := range row {
-			rowData[columns[i]] = cellValue
-		}
-		tableRows = append(tableRows, table.NewRow(rowData))
-	}
-
-	// Define styles with nice colors
-	baseStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#7C3AED")).
-		Foreground(lipgloss.Color("#E5E7EB"))
-
-	headerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color("#7C3AED")).
-		Bold(true).
-		Padding(0, 1)
-
-	// Create and configure the bubble table with colors
-	t := table.New(tableColumns).
-		WithRows(tableRows).
-		WithBaseStyle(baseStyle).
-		HeaderStyle(headerStyle).
-		WithMissingDataIndicator(lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#6B7280")).
-			Italic(true).
-			Render("NULL"))
-
-	// Add title above the table
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("86")).
-		MarginBottom(1)
-
-	return titleStyle.Render("Query Activity") + "\n" + t.View(), nil
 }

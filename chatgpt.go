@@ -25,13 +25,13 @@ func (m *Model) callChatGPT(prompt string) tea.Cmd {
 		var fullPrompt string
 		currentSQL := strings.TrimSpace(m.sqlTextarea.Value())
 		if currentSQL != "" {
-			fullPrompt = fmt.Sprintf("Modify the following PostgreSQL query based on this request: %s\n\nCurrent query:\n%s\n\nPlease respond with ONLY the modified SQL query, no explanations or additional text.", prompt, currentSQL)
+			fullPrompt = fmt.Sprintf("Modify the following PostgreSQL query based on this request: %s\n\nCurrent query:\n%s\n\nPlease respond with ONLY the modified SQL query, no explanations or additional text. Use the documentation available at https://www.postgresql.org/docs/current/index.html to provide a validated query that will work against the current major version. This query will be used to power a UI used to provide insight into the prompted question, so consider adding as much related data (like joining pids to their process query), joining relnames to their table names, using pg_size_pretty when rendering data volume and using left() to truncate any column data that might get too long to display in a normal shell window.", prompt, currentSQL)
 		} else {
-			fullPrompt = fmt.Sprintf("Generate a PostgreSQL query for the following request: %s\n\nPlease respond with ONLY the SQL query, no explanations or additional text. Use the documentation available at https://www.postgresql.org/docs/current/index.html to provide a validated query that will work against the current major version.", prompt)
+			fullPrompt = fmt.Sprintf("Generate a PostgreSQL query for the following request: %s\n\nPlease respond with ONLY the SQL query, no explanations or additional text. Use the documentation available at https://www.postgresql.org/docs/current/index.html to provide a validated query that will work against the current major version. This query will be used to power a UI used to provide insight into the prompted question, so consider adding as much related data (like joining pids to their process query), joining relnames to their table names, using pg_size_pretty when rendering data volume and using left() to truncate any column data that might get too long to display in a normal shell window.", prompt)
 		}
 
 		reqBody := ChatGPTRequest{
-			Model: "gpt-5-mini",
+			Model: "gpt-4o-mini",
 			Messages: []Message{
 				{
 					Role:    "user",
