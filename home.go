@@ -226,12 +226,135 @@ func RenderSparklineChart(sparklineData *SparklineData, chartWidth int) string {
 	return result
 }
 
-// RenderHomeSideBySide renders both charts in side-by-side blocks
+// GetCacheHitRatio queries the database for cache hit ratio percentage
+func GetCacheHitRatio(db *sql.DB) (float64, bool, error) {
+	var ratio sql.NullFloat64
+	err := db.QueryRow("SELECT ROUND(SUM(blks_hit) * 100.0 / NULLIF(SUM(blks_hit) + SUM(blks_read), 0), 2) as ratio FROM pg_stat_database").Scan(&ratio)
+	if err != nil {
+		return 0, false, fmt.Errorf("failed to query cache hit ratio: %w", err)
+	}
+	if !ratio.Valid {
+		return 0, false, nil
+	}
+	return ratio.Float64, true, nil
+}
+
+// GetReplicationLag queries the database for replication lag in seconds
+func GetReplicationLag(db *sql.DB) (int, bool, error) {
+	var lagSeconds sql.NullInt64
+	err := db.QueryRow("SELECT CASE WHEN pg_is_in_recovery() THEN EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::int ELSE NULL END as lag_seconds").Scan(&lagSeconds)
+	if err != nil {
+		return 0, false, fmt.Errorf("failed to query replication lag: %w", err)
+	}
+	if !lagSeconds.Valid {
+		return 0, false, nil
+	}
+	return int(lagSeconds.Int64), true, nil
+}
+
+// RenderCacheHitRatio renders the cache hit ratio widget
+func RenderCacheHitRatio(db *sql.DB) string {
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("86")).
+		MarginBottom(1)
+
+	ratio, valid, err := GetCacheHitRatio(db)
+	if err != nil || !valid {
+		return titleStyle.Render("Cache Hit Ratio") + "\n" +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("N/A")
+	}
+
+	var color lipgloss.Color
+	switch {
+	case ratio >= 99:
+		color = lipgloss.Color("10") // Green
+	case ratio >= 95:
+		color = lipgloss.Color("11") // Yellow
+	default:
+		color = lipgloss.Color("9") // Red
+	}
+
+	valueStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(color).
+		PaddingTop(1)
+
+	return titleStyle.Render("Cache Hit Ratio") + "\n" +
+		valueStyle.Render(fmt.Sprintf("%.2f%%", ratio))
+}
+
+// RenderReplicationLag renders the replication lag widget
+func RenderReplicationLag(db *sql.DB) string {
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("86")).
+		MarginBottom(1)
+
+	lag, valid, err := GetReplicationLag(db)
+	if err != nil || !valid {
+		return titleStyle.Render("Replication Lag") + "\n" +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("N/A (not a replica)")
+	}
+
+	var color lipgloss.Color
+	switch {
+	case lag < 1:
+		color = lipgloss.Color("10") // Green
+	case lag <= 10:
+		color = lipgloss.Color("11") // Yellow
+	default:
+		color = lipgloss.Color("9") // Red
+	}
+
+	valueStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(color).
+		PaddingTop(1)
+
+	return titleStyle.Render("Replication Lag") + "\n" +
+		valueStyle.Render(fmt.Sprintf("%ds", lag))
+}
+
+// RenderHomeDashboard renders all 4 widgets in a 2x2 grid
+func RenderHomeDashboard(barChart, sparklineChart, cacheHitRatio, replicationLag string, width int) string {
+	halfWidth := GetChartWidth(width)
+	borderColor := lipgloss.Color("62")
+
+	leftStyle := lipgloss.NewStyle().
+		Width(halfWidth).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(0, 1).
+		MarginRight(2)
+
+	rightStyle := lipgloss.NewStyle().
+		Width(halfWidth).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(0, 1)
+
+	// Bottom widgets: shorter height for single-value displays
+	bottomLeftStyle := leftStyle.Height(4)
+	bottomRightStyle := rightStyle.Height(4)
+
+	topRow := lipgloss.JoinHorizontal(lipgloss.Top,
+		leftStyle.Render(barChart),
+		rightStyle.Render(sparklineChart),
+	)
+
+	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top,
+		bottomLeftStyle.Render(cacheHitRatio),
+		bottomRightStyle.Render(replicationLag),
+	)
+
+	return lipgloss.JoinVertical(lipgloss.Left, topRow, bottomRow)
+}
+
+// RenderHomeSideBySide renders both charts in side-by-side blocks (legacy, unused)
 func RenderHomeSideBySide(barChart, sparklineChart string, width int) string {
-	// Calculate half width for each chart
 	halfWidth := GetChartWidth(width)
 
-	// Create styled blocks for each chart
 	leftStyle := lipgloss.NewStyle().
 		Width(halfWidth).
 		Border(lipgloss.RoundedBorder()).
@@ -243,7 +366,6 @@ func RenderHomeSideBySide(barChart, sparklineChart string, width int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62"))
 
-	// Render charts in styled blocks side by side
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		leftStyle.Render(barChart),

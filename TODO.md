@@ -13,7 +13,6 @@
 - [ ] Query history — keep a log of recently executed ad-hoc queries for easy re-run
 - [ ] Export results to CSV/JSON (pipe-friendly for scripting)
 - [ ] Parameterized queries — allow `$1`, `$2` placeholders and prompt for values at runtime
-- [ ] Query timing — show execution duration for each query
 - [ ] Saved query folders/categories for organizing large query libraries
 - [ ] Default query pack updates — ship new useful queries with releases, offer to merge into user's `queries.db`
 
