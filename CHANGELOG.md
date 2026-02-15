@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/benjaminsanborn/psq/compare/v1.7.0...v1.8.0) (2026-02-15)
+
+
+### Features
+
+* show replication slot lag on primary instances ([17bf394](https://github.com/benjaminsanborn/psq/commit/17bf3940cba28e24a392383afbd7f0fef3fc5822))
+
 # [1.7.0](https://github.com/benjaminsanborn/psq/compare/v1.6.0...v1.7.0) (2026-02-15)
 
 
