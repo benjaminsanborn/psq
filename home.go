@@ -239,17 +239,98 @@ func GetCacheHitRatio(db *sql.DB) (float64, bool, error) {
 	return ratio.Float64, true, nil
 }
 
-// GetReplicationLag queries the database for replication lag in seconds
-func GetReplicationLag(db *sql.DB) (int, bool, error) {
-	var lagSeconds sql.NullInt64
-	err := db.QueryRow("SELECT CASE WHEN pg_is_in_recovery() THEN EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::int ELSE NULL END as lag_seconds").Scan(&lagSeconds)
+// ReplicationLagInfo holds replication lag details
+type ReplicationLagInfo struct {
+	IsReplica      bool
+	LagSeconds     int
+	SlotName       string
+	SlotType       string // "streaming" or "logical"
+	TotalSlots     int
+	StreamingSlots int
+	LogicalSlots   int
+	Valid          bool
+}
+
+// GetReplicationLag queries replication lag — replica replay lag or primary slot lag
+func GetReplicationLag(db *sql.DB) (ReplicationLagInfo, error) {
+	var isInRecovery bool
+	if err := db.QueryRow("SELECT pg_is_in_recovery()").Scan(&isInRecovery); err != nil {
+		return ReplicationLagInfo{}, fmt.Errorf("failed to check recovery state: %w", err)
+	}
+
+	if isInRecovery {
+		// Replica: show replay lag
+		var lagSeconds sql.NullInt64
+		err := db.QueryRow("SELECT EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::int").Scan(&lagSeconds)
+		if err != nil || !lagSeconds.Valid {
+			return ReplicationLagInfo{IsReplica: true}, err
+		}
+		return ReplicationLagInfo{
+			IsReplica:  true,
+			LagSeconds: int(lagSeconds.Int64),
+			Valid:      true,
+		}, nil
+	}
+
+	// Primary: find the highest lag across all replication slots
+	info := ReplicationLagInfo{IsReplica: false}
+
+	// Count slots by type
+	rows, err := db.Query(`
+		SELECT slot_type, COUNT(*)
+		FROM pg_replication_slots
+		GROUP BY slot_type`)
 	if err != nil {
-		return 0, false, fmt.Errorf("failed to query replication lag: %w", err)
+		return info, nil // no slots or no permission — not an error
 	}
-	if !lagSeconds.Valid {
-		return 0, false, nil
+	defer rows.Close()
+	for rows.Next() {
+		var slotType string
+		var count int
+		if err := rows.Scan(&slotType, &count); err != nil {
+			continue
+		}
+		info.TotalSlots += count
+		if slotType == "physical" {
+			info.StreamingSlots = count
+		} else if slotType == "logical" {
+			info.LogicalSlots = count
+		}
 	}
-	return int(lagSeconds.Int64), true, nil
+
+	if info.TotalSlots == 0 {
+		return info, nil
+	}
+
+	// Get the slot with the highest lag (pg_wal_lsn_diff between current WAL and confirmed flush)
+	var slotName sql.NullString
+	var slotType sql.NullString
+	var lagBytes sql.NullInt64
+	err = db.QueryRow(`
+		SELECT slot_name, slot_type,
+			pg_wal_lsn_diff(pg_current_wal_lsn(), COALESCE(confirmed_flush_lsn, restart_lsn))::bigint AS lag_bytes
+		FROM pg_replication_slots
+		WHERE active OR NOT active
+		ORDER BY lag_bytes DESC NULLS LAST
+		LIMIT 1`).Scan(&slotName, &slotType, &lagBytes)
+	if err != nil || !slotName.Valid {
+		return info, nil
+	}
+
+	info.SlotName = slotName.String
+	if slotType.Valid {
+		if slotType.String == "physical" {
+			info.SlotType = "streaming"
+		} else {
+			info.SlotType = slotType.String
+		}
+	}
+	if lagBytes.Valid {
+		info.LagSeconds = int(lagBytes.Int64) // actually bytes, we'll format differently
+		info.Valid = true
+	}
+
+	return info, nil
 }
 
 // RenderCacheHitRatio renders the cache hit ratio widget
@@ -284,6 +365,20 @@ func RenderCacheHitRatio(db *sql.DB) string {
 		valueStyle.Render(fmt.Sprintf("%.2f%%", ratio))
 }
 
+// formatBytes formats byte counts into human-readable form
+func formatBytes(bytes int) string {
+	switch {
+	case bytes >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(1<<30))
+	case bytes >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(1<<20))
+	case bytes >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
+
 // RenderReplicationLag renders the replication lag widget
 func RenderReplicationLag(db *sql.DB) string {
 	titleStyle := lipgloss.NewStyle().
@@ -291,29 +386,76 @@ func RenderReplicationLag(db *sql.DB) string {
 		Foreground(lipgloss.Color("86")).
 		MarginBottom(1)
 
-	lag, valid, err := GetReplicationLag(db)
-	if err != nil || !valid {
-		return titleStyle.Render("Replication Lag") + "\n" +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("N/A (not a replica)")
+	dimStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("8"))
+
+	info, err := GetReplicationLag(db)
+	if err != nil {
+		return titleStyle.Render("Replication") + "\n" + dimStyle.Render("error")
 	}
 
+	if info.IsReplica {
+		// Replica mode: show replay lag in seconds
+		if !info.Valid {
+			return titleStyle.Render("Replica Lag") + "\n" + dimStyle.Render("N/A")
+		}
+		var color lipgloss.Color
+		switch {
+		case info.LagSeconds < 1:
+			color = lipgloss.Color("10") // Green
+		case info.LagSeconds <= 10:
+			color = lipgloss.Color("11") // Yellow
+		default:
+			color = lipgloss.Color("9") // Red
+		}
+		valueStyle := lipgloss.NewStyle().Bold(true).Foreground(color).PaddingTop(1)
+		return titleStyle.Render("Replica Lag") + "\n" +
+			valueStyle.Render(fmt.Sprintf("%ds", info.LagSeconds))
+	}
+
+	// Primary mode
+	if info.TotalSlots == 0 {
+		return titleStyle.Render("Replication Slots") + "\n" + dimStyle.Render("none")
+	}
+
+	// Slot count summary
+	slotSummary := fmt.Sprintf("%d slots", info.TotalSlots)
+	parts := []string{}
+	if info.StreamingSlots > 0 {
+		parts = append(parts, fmt.Sprintf("%d streaming", info.StreamingSlots))
+	}
+	if info.LogicalSlots > 0 {
+		parts = append(parts, fmt.Sprintf("%d logical", info.LogicalSlots))
+	}
+	if len(parts) > 0 {
+		slotSummary += " (" + strings.Join(parts, ", ") + ")"
+	}
+
+	if !info.Valid {
+		return titleStyle.Render("Replication Slots") + "\n" +
+			dimStyle.Render(slotSummary) + "\n" +
+			dimStyle.Render("no lag data")
+	}
+
+	// Color by WAL lag severity
+	lagStr := formatBytes(info.LagSeconds) // LagSeconds holds bytes for primary
 	var color lipgloss.Color
 	switch {
-	case lag < 1:
+	case info.LagSeconds < 1<<20: // < 1 MB
 		color = lipgloss.Color("10") // Green
-	case lag <= 10:
+	case info.LagSeconds < 100<<20: // < 100 MB
 		color = lipgloss.Color("11") // Yellow
 	default:
 		color = lipgloss.Color("9") // Red
 	}
 
-	valueStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(color).
-		PaddingTop(1)
+	valueStyle := lipgloss.NewStyle().Bold(true).Foreground(color)
+	detailStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 
-	return titleStyle.Render("Replication Lag") + "\n" +
-		valueStyle.Render(fmt.Sprintf("%ds", lag))
+	return titleStyle.Render("Replication Slots") + "\n" +
+		dimStyle.Render(slotSummary) + "\n" +
+		valueStyle.Render(lagStr+" behind") +
+		detailStyle.Render(" · "+info.SlotType+" · "+info.SlotName)
 }
 
 // RenderHomeDashboard renders all 4 widgets in a 2x2 grid
@@ -335,8 +477,8 @@ func RenderHomeDashboard(barChart, sparklineChart, cacheHitRatio, replicationLag
 		Padding(0, 1)
 
 	// Bottom widgets: shorter height for single-value displays
-	bottomLeftStyle := leftStyle.Height(4)
-	bottomRightStyle := rightStyle.Height(4)
+	bottomLeftStyle := leftStyle.Height(5)
+	bottomRightStyle := rightStyle.Height(5)
 
 	topRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		leftStyle.Render(barChart),
