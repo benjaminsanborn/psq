@@ -62,7 +62,7 @@ brews:
     # Repository to push the generated files to.
     repository:
       owner: benjaminsanborn 
-      name: homebrew-psq
+      name: homebrew-benjaminsanborn
       branch: main
       token: "{{ .Env.GITHUB_TOKEN }}"
 
