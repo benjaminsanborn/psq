@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/benjaminsanborn/psq/compare/v1.6.0...v1.7.0) (2026-02-15)
+
+
+### Features
+
+* switch brew formula to dedicated homebrew-psq tap ([fb5794e](https://github.com/benjaminsanborn/psq/commit/fb5794e52d3e830ed94cb989f67d9068ec83b9a6))
+
 # [1.6.0](https://github.com/benjaminsanborn/psq/compare/v1.5.0...v1.6.0) (2026-02-15)
 
 
