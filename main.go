@@ -8,6 +8,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Set via ldflags at build time
+var version = "dev"
+
 func main() {
 	// Initialize bubblezone global manager
 	zone.NewGlobal()
@@ -16,9 +19,10 @@ func main() {
 	var service string
 
 	var rootCmd = &cobra.Command{
-		Use:   "psq [service]",
-		Short: "PostgreSQL monitoring CLI tool",
-		Long:  `A TUI-based PostgreSQL monitoring tool that reads connection from ~/.pg_service.conf`,
+		Use:     "psq [service]",
+		Short:   "PostgreSQL monitoring CLI tool",
+		Long:    `A TUI-based PostgreSQL monitoring tool that reads connection from ~/.pg_service.conf`,
+		Version: version,
 		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			// Use provided service name or show picker if none provided

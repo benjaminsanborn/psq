@@ -2,3 +2,13 @@ psq
 # Added by goreleaser init:
 dist/
 demo.gif
+
+# OpenClaw workspace files
+AGENTS.md
+BOOTSTRAP.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
+MEMORY.md
+memory/
