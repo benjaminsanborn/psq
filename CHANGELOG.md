@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/benjaminsanborn/psq/compare/v1.5.0...v1.6.0) (2026-02-15)
+
+
+### Features
+
+* update brew tap, add --version flag, fix release workflow ([4879a7e](https://github.com/benjaminsanborn/psq/commit/4879a7e882c59350be1d2932cd0afebdeebcdda6))
+
 # [1.5.0](https://github.com/benjaminsanborn/psq/compare/v1.4.0...v1.5.0) (2025-09-29)
 
 
