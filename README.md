@@ -8,7 +8,7 @@ Postgres monitoring in the CLI. Partially inspired from the old UI of PgAdmin.
 ### Homebrew
 
 ```bash
-brew install benjaminsanborn/benjaminsanborn/psq
+brew install benjaminsanborn/psq/psq
 ```
 
 ### Source
