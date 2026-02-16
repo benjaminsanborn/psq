@@ -562,32 +562,58 @@ type BlockingLockInfo struct {
 
 // GetBlockingLockInfo queries for the PID blocking the most queries
 func GetBlockingLockInfo(db *sql.DB) (BlockingLockInfo, error) {
-	// Use pg_blocking_pids (Postgres 9.6+) to find blocking relationships
+	// Recursively walk blocking chain to find root blockers
 	sqlQuery := `
-		WITH blocking AS (
+		WITH RECURSIVE blocking_chain AS (
+			-- Start with all direct blocking relationships
 			SELECT 
-				UNNEST(pg_blocking_pids(sa.pid)) AS blocking_pid,
+				sa.pid AS leaf_pid,
 				sa.pid AS blocked_pid,
-				sa.state_change
+				UNNEST(pg_blocking_pids(sa.pid)) AS blocking_pid,
+				sa.state_change,
+				1 AS depth
 			FROM pg_stat_activity sa
 			WHERE cardinality(pg_blocking_pids(sa.pid)) > 0
+			
+			UNION ALL
+			
+			-- Walk up the chain to find the root blocker
+			SELECT 
+				bc.leaf_pid,
+				bc.blocking_pid AS blocked_pid,
+				UNNEST(pg_blocking_pids(sa.pid)) AS blocking_pid,
+				bc.state_change,
+				bc.depth + 1
+			FROM blocking_chain bc
+			JOIN pg_stat_activity sa ON sa.pid = bc.blocking_pid
+			WHERE cardinality(pg_blocking_pids(sa.pid)) > 0
 		),
+		-- For each leaf (originally blocked PID), find its root blocker
+		leaf_to_root AS (
+			SELECT DISTINCT ON (leaf_pid)
+				leaf_pid,
+				blocking_pid AS root_blocker,
+				state_change
+			FROM blocking_chain
+			ORDER BY leaf_pid, depth DESC
+		),
+		-- Count how many PIDs each root blocker is blocking
 		blocking_summary AS (
 			SELECT 
-				blocking_pid,
-				COUNT(DISTINCT blocked_pid) AS blocked_count,
+				root_blocker,
+				COUNT(DISTINCT leaf_pid) AS blocked_count,
 				MAX(EXTRACT(EPOCH FROM (NOW() - state_change))::int) AS longest_wait_sec
-			FROM blocking
-			GROUP BY blocking_pid
+			FROM leaf_to_root
+			GROUP BY root_blocker
 		)
 		SELECT 
-			bs.blocking_pid,
+			bs.root_blocker AS blocking_pid,
 			bs.blocked_count,
 			sa.usename,
 			LEFT(sa.query, 40) AS query,
 			bs.longest_wait_sec
 		FROM blocking_summary bs
-		JOIN pg_stat_activity sa ON sa.pid = bs.blocking_pid
+		JOIN pg_stat_activity sa ON sa.pid = bs.root_blocker
 		ORDER BY bs.blocked_count DESC, bs.longest_wait_sec DESC
 		LIMIT 1`
 
