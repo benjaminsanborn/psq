@@ -379,6 +379,27 @@ func formatBytes(bytes int) string {
 	}
 }
 
+// formatDuration formats seconds into human-readable duration
+func formatDuration(seconds int) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	secs := seconds % 60
+	if minutes < 60 {
+		if secs == 0 {
+			return fmt.Sprintf("%dm", minutes)
+		}
+		return fmt.Sprintf("%dm %ds", minutes, secs)
+	}
+	hours := minutes / 60
+	mins := minutes % 60
+	if mins == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh %dm", hours, mins)
+}
+
 // RenderReplicationLag renders the replication lag widget
 func RenderReplicationLag(db *sql.DB) string {
 	titleStyle := lipgloss.NewStyle().
@@ -552,12 +573,13 @@ func GetChartWidth(totalWidth int) int {
 
 // BlockingLockInfo holds information about the most blocking PID
 type BlockingLockInfo struct {
-	Valid          bool
-	BlockingPID    int
-	BlockedCount   int
-	Username       string
-	Query          string
-	LongestWaitSec int
+	Valid            bool
+	BlockingPID      int
+	BlockedCount     int
+	Username         string
+	Query            string
+	LongestWaitSec   int
+	BlockerRunningSec int // How long the blocking query has been running
 }
 
 // GetBlockingLockInfo queries for the PID blocking the most queries
@@ -611,7 +633,8 @@ func GetBlockingLockInfo(db *sql.DB) (BlockingLockInfo, error) {
 			bs.blocked_count,
 			sa.usename,
 			LEFT(sa.query, 40) AS query,
-			bs.longest_wait_sec
+			bs.longest_wait_sec,
+			EXTRACT(EPOCH FROM (NOW() - sa.query_start))::int AS blocker_running_sec
 		FROM blocking_summary bs
 		JOIN pg_stat_activity sa ON sa.pid = bs.root_blocker
 		ORDER BY bs.blocked_count DESC, bs.longest_wait_sec DESC
@@ -619,9 +642,9 @@ func GetBlockingLockInfo(db *sql.DB) (BlockingLockInfo, error) {
 
 	var info BlockingLockInfo
 	var username, queryText sql.NullString
-	var blockingPID, blockedCount, longestWait sql.NullInt64
+	var blockingPID, blockedCount, longestWait, blockerRunning sql.NullInt64
 
-	err := db.QueryRow(sqlQuery).Scan(&blockingPID, &blockedCount, &username, &queryText, &longestWait)
+	err := db.QueryRow(sqlQuery).Scan(&blockingPID, &blockedCount, &username, &queryText, &longestWait, &blockerRunning)
 	if err == sql.ErrNoRows {
 		// No blocking locks - this is good!
 		return BlockingLockInfo{Valid: false}, nil
@@ -645,6 +668,9 @@ func GetBlockingLockInfo(db *sql.DB) (BlockingLockInfo, error) {
 	}
 	if longestWait.Valid {
 		info.LongestWaitSec = int(longestWait.Int64)
+	}
+	if blockerRunning.Valid {
+		info.BlockerRunningSec = int(blockerRunning.Int64)
 	}
 
 	return info, nil
@@ -685,6 +711,19 @@ func RenderBlockingLocks(db *sql.DB) string {
 		waitColor = lipgloss.Color("9") // Red - critical
 	}
 
+	// Color code blocker runtime
+	var runtimeColor lipgloss.Color
+	switch {
+	case info.BlockerRunningSec < 10:
+		runtimeColor = lipgloss.Color("10") // Green - quick query
+	case info.BlockerRunningSec < 60:
+		runtimeColor = lipgloss.Color("11") // Yellow - moderate
+	case info.BlockerRunningSec < 300:
+		runtimeColor = lipgloss.Color("208") // Orange - long
+	default:
+		runtimeColor = lipgloss.Color("9") // Red - very long, likely needs killing
+	}
+
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("9")). // Red for warning
@@ -701,17 +740,26 @@ func RenderBlockingLocks(db *sql.DB) string {
 		Bold(true).
 		Foreground(waitColor)
 
+	runtimeStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(runtimeColor)
+
 	queryStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("251")).
 		Italic(true)
 
 	header := fmt.Sprintf("⚠ PID %d is blocking %d queries", info.BlockingPID, info.BlockedCount)
 
+	// Format runtime nicely
+	runtimeStr := formatDuration(info.BlockerRunningSec)
+
 	details := lipgloss.JoinHorizontal(lipgloss.Top,
 		labelStyle.Render("User: "),
 		valueStyle.Render(info.Username),
 		labelStyle.Render("  •  Wait: "),
 		waitStyle.Render(fmt.Sprintf("%ds", info.LongestWaitSec)),
+		labelStyle.Render("  •  Running: "),
+		runtimeStyle.Render(runtimeStr),
 	)
 
 	queryText := queryStyle.Render(info.Query)
