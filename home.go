@@ -562,36 +562,33 @@ type BlockingLockInfo struct {
 
 // GetBlockingLockInfo queries for the PID blocking the most queries
 func GetBlockingLockInfo(db *sql.DB) (BlockingLockInfo, error) {
+	// Use pg_blocking_pids (Postgres 9.6+) to find blocking relationships
 	sqlQuery := `
-		WITH blocking_pids AS (
+		WITH blocking AS (
 			SELECT 
-				blocking.pid AS blocking_pid,
-				blocking.usename,
-				LEFT(blocking.query, 40) AS query,
-				COUNT(DISTINCT blocked.pid) AS blocked_count,
-				MAX(EXTRACT(EPOCH FROM (NOW() - blocked.state_change))::int) AS longest_wait_sec
-			FROM pg_locks blocked
-			JOIN pg_stat_activity blocked_activity ON blocked.pid = blocked_activity.pid
-			JOIN pg_locks blocking_lock ON (
-				blocking_lock.locktype = blocked.locktype
-				AND blocking_lock.database IS NOT DISTINCT FROM blocked.database
-				AND blocking_lock.relation IS NOT DISTINCT FROM blocked.relation
-				AND blocking_lock.page IS NOT DISTINCT FROM blocked.page
-				AND blocking_lock.tuple IS NOT DISTINCT FROM blocked.tuple
-				AND blocking_lock.virtualxid IS NOT DISTINCT FROM blocked.virtualxid
-				AND blocking_lock.transactionid IS NOT DISTINCT FROM blocked.transactionid
-				AND blocking_lock.classid IS NOT DISTINCT FROM blocked.classid
-				AND blocking_lock.objid IS NOT DISTINCT FROM blocked.objid
-				AND blocking_lock.objsubid IS NOT DISTINCT FROM blocked.objsubid
-				AND blocking_lock.pid != blocked.pid
-			)
-			JOIN pg_stat_activity blocking ON blocking_lock.pid = blocking.pid
-			WHERE NOT blocked.granted AND blocking_lock.granted
-			GROUP BY blocking.pid, blocking.usename, blocking.query
+				UNNEST(pg_blocking_pids(sa.pid)) AS blocking_pid,
+				sa.pid AS blocked_pid,
+				sa.state_change
+			FROM pg_stat_activity sa
+			WHERE cardinality(pg_blocking_pids(sa.pid)) > 0
+		),
+		blocking_summary AS (
+			SELECT 
+				blocking_pid,
+				COUNT(DISTINCT blocked_pid) AS blocked_count,
+				MAX(EXTRACT(EPOCH FROM (NOW() - state_change))::int) AS longest_wait_sec
+			FROM blocking
+			GROUP BY blocking_pid
 		)
-		SELECT blocking_pid, blocked_count, usename, query, longest_wait_sec
-		FROM blocking_pids
-		ORDER BY blocked_count DESC, longest_wait_sec DESC
+		SELECT 
+			bs.blocking_pid,
+			bs.blocked_count,
+			sa.usename,
+			LEFT(sa.query, 40) AS query,
+			bs.longest_wait_sec
+		FROM blocking_summary bs
+		JOIN pg_stat_activity sa ON sa.pid = bs.blocking_pid
+		ORDER BY bs.blocked_count DESC, bs.longest_wait_sec DESC
 		LIMIT 1`
 
 	var info BlockingLockInfo
@@ -634,12 +631,13 @@ func RenderBlockingLocks(db *sql.DB) string {
 		Foreground(lipgloss.Color("86")).
 		MarginBottom(1)
 
-	dimStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("8"))
+	errorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("9"))
 
 	info, err := GetBlockingLockInfo(db)
 	if err != nil {
-		return titleStyle.Render("Blocking Locks") + "\n" + dimStyle.Render("error querying locks")
+		return titleStyle.Render("Blocking Locks") + "\n" + 
+			errorStyle.Render(fmt.Sprintf("Error: %v", err))
 	}
 
 	if !info.Valid {
