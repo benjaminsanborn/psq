@@ -458,8 +458,8 @@ func RenderReplicationLag(db *sql.DB) string {
 		detailStyle.Render(" · "+info.SlotType+" · "+info.SlotName)
 }
 
-// RenderHomeDashboard renders all 4 widgets in a 2x2 grid
-func RenderHomeDashboard(barChart, sparklineChart, cacheHitRatio, replicationLag string, width int) string {
+// RenderHomeDashboard renders all widgets: 2x2 grid + full-width blocking locks
+func RenderHomeDashboard(barChart, sparklineChart, cacheHitRatio, replicationLag, blockingLocks string, width int) string {
 	halfWidth := GetChartWidth(width)
 	borderColor := lipgloss.Color("62")
 
@@ -490,7 +490,17 @@ func RenderHomeDashboard(barChart, sparklineChart, cacheHitRatio, replicationLag
 		bottomRightStyle.Render(replicationLag),
 	)
 
-	return lipgloss.JoinVertical(lipgloss.Left, topRow, bottomRow)
+	// Full-width blocking locks widget at the top
+	fullWidthStyle := lipgloss.NewStyle().
+		Width(width - 4).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(0, 1).
+		MarginBottom(1)
+
+	blockingLocksRow := fullWidthStyle.Render(blockingLocks)
+
+	return lipgloss.JoinVertical(lipgloss.Left, blockingLocksRow, topRow, bottomRow)
 }
 
 // RenderHomeSideBySide renders both charts in side-by-side blocks (legacy, unused)
@@ -538,4 +548,152 @@ func RenderHomeWithTable(barChart, sparklineChart, activeTable string, width int
 // GetChartWidth calculates the width available for each chart
 func GetChartWidth(totalWidth int) int {
 	return (totalWidth - 8) / 2 // Half width minus padding
+}
+
+// BlockingLockInfo holds information about the most blocking PID
+type BlockingLockInfo struct {
+	Valid          bool
+	BlockingPID    int
+	BlockedCount   int
+	Username       string
+	Query          string
+	LongestWaitSec int
+}
+
+// GetBlockingLockInfo queries for the PID blocking the most queries
+func GetBlockingLockInfo(db *sql.DB) (BlockingLockInfo, error) {
+	sqlQuery := `
+		WITH blocking_pids AS (
+			SELECT 
+				blocking.pid AS blocking_pid,
+				blocking.usename,
+				LEFT(blocking.query, 40) AS query,
+				COUNT(DISTINCT blocked.pid) AS blocked_count,
+				MAX(EXTRACT(EPOCH FROM (NOW() - blocked.state_change))::int) AS longest_wait_sec
+			FROM pg_locks blocked
+			JOIN pg_stat_activity blocked_activity ON blocked.pid = blocked_activity.pid
+			JOIN pg_locks blocking_lock ON (
+				blocking_lock.locktype = blocked.locktype
+				AND blocking_lock.database IS NOT DISTINCT FROM blocked.database
+				AND blocking_lock.relation IS NOT DISTINCT FROM blocked.relation
+				AND blocking_lock.page IS NOT DISTINCT FROM blocked.page
+				AND blocking_lock.tuple IS NOT DISTINCT FROM blocked.tuple
+				AND blocking_lock.virtualxid IS NOT DISTINCT FROM blocked.virtualxid
+				AND blocking_lock.transactionid IS NOT DISTINCT FROM blocked.transactionid
+				AND blocking_lock.classid IS NOT DISTINCT FROM blocked.classid
+				AND blocking_lock.objid IS NOT DISTINCT FROM blocked.objid
+				AND blocking_lock.objsubid IS NOT DISTINCT FROM blocked.objsubid
+				AND blocking_lock.pid != blocked.pid
+			)
+			JOIN pg_stat_activity blocking ON blocking_lock.pid = blocking.pid
+			WHERE NOT blocked.granted AND blocking_lock.granted
+			GROUP BY blocking.pid, blocking.usename, blocking.query
+		)
+		SELECT blocking_pid, blocked_count, usename, query, longest_wait_sec
+		FROM blocking_pids
+		ORDER BY blocked_count DESC, longest_wait_sec DESC
+		LIMIT 1`
+
+	var info BlockingLockInfo
+	var username, queryText sql.NullString
+	var blockingPID, blockedCount, longestWait sql.NullInt64
+
+	err := db.QueryRow(sqlQuery).Scan(&blockingPID, &blockedCount, &username, &queryText, &longestWait)
+	if err == sql.ErrNoRows {
+		// No blocking locks - this is good!
+		return BlockingLockInfo{Valid: false}, nil
+	}
+	if err != nil {
+		return BlockingLockInfo{}, fmt.Errorf("failed to query blocking locks: %w", err)
+	}
+
+	if !blockingPID.Valid || !blockedCount.Valid {
+		return BlockingLockInfo{Valid: false}, nil
+	}
+
+	info.Valid = true
+	info.BlockingPID = int(blockingPID.Int64)
+	info.BlockedCount = int(blockedCount.Int64)
+	if username.Valid {
+		info.Username = username.String
+	}
+	if queryText.Valid {
+		info.Query = queryText.String
+	}
+	if longestWait.Valid {
+		info.LongestWaitSec = int(longestWait.Int64)
+	}
+
+	return info, nil
+}
+
+// RenderBlockingLocks renders the blocking locks widget (full width)
+func RenderBlockingLocks(db *sql.DB) string {
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("86")).
+		MarginBottom(1)
+
+	dimStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("8"))
+
+	info, err := GetBlockingLockInfo(db)
+	if err != nil {
+		return titleStyle.Render("Blocking Locks") + "\n" + dimStyle.Render("error querying locks")
+	}
+
+	if !info.Valid {
+		okStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("10")).
+			PaddingTop(1)
+		return titleStyle.Render("Blocking Locks") + "\n" +
+			okStyle.Render("✓ No blocking locks detected")
+	}
+
+	// We have blocking locks - show the worst offender
+	var waitColor lipgloss.Color
+	switch {
+	case info.LongestWaitSec < 5:
+		waitColor = lipgloss.Color("11") // Yellow - short wait
+	case info.LongestWaitSec < 30:
+		waitColor = lipgloss.Color("208") // Orange - concerning
+	default:
+		waitColor = lipgloss.Color("9") // Red - critical
+	}
+
+	headerStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("9")). // Red for warning
+		PaddingTop(1)
+
+	labelStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("244")).
+		Bold(true)
+
+	valueStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("15"))
+
+	waitStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(waitColor)
+
+	queryStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("251")).
+		Italic(true)
+
+	header := fmt.Sprintf("⚠ PID %d is blocking %d queries", info.BlockingPID, info.BlockedCount)
+
+	details := lipgloss.JoinHorizontal(lipgloss.Top,
+		labelStyle.Render("User: "),
+		valueStyle.Render(info.Username),
+		labelStyle.Render("  •  Wait: "),
+		waitStyle.Render(fmt.Sprintf("%ds", info.LongestWaitSec)),
+	)
+
+	queryText := queryStyle.Render(info.Query)
+
+	return titleStyle.Render("Blocking Locks") + "\n" +
+		headerStyle.Render(header) + "\n" +
+		details + "\n" +
+		queryText
 }

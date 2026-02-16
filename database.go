@@ -268,7 +268,10 @@ func renderConnectionBarChart(db *sql.DB, query string, queryName string, model 
 		cacheHitRatio := RenderCacheHitRatio(db)
 		replicationLag := RenderReplicationLag(db)
 
-		return RenderHomeDashboard(barChart, sparklineChart, cacheHitRatio, replicationLag, model.width), nil
+		// Render blocking locks widget (full width)
+		blockingLocks := RenderBlockingLocks(db)
+
+		return RenderHomeDashboard(barChart, sparklineChart, cacheHitRatio, replicationLag, blockingLocks, model.width), nil
 	}
 	return executeQuery(db, query)
 }
