@@ -1,9 +1,6 @@
 # TODO - psq improvements
 
 ## UX / UI
-- [ ] Auto-refresh toggle — let users enable/disable the 1-second tick per query (some queries are expensive)
-- [ ] Configurable refresh interval (1s is aggressive for remote/production databases)
-- [ ] Status bar showing connection info, last refresh time, and row count
 - [ ] Color themes / dark-mode variants (currently hardcoded lipgloss colors)
 - [ ] Resize the SQL editor textarea dynamically to terminal height
 - [ ] Keyboard shortcut cheat sheet overlay (beyond the current `?` help — something always-visible in the footer)

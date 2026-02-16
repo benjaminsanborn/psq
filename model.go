@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ type Model struct {
 	width            int
 	height           int
 	service          string
+	db               *sql.DB // persistent database connection
 	lastQuery        Query
 	viewport         viewport.Model
 	ready            bool
@@ -105,6 +107,28 @@ func NewModel(service string) *Model {
 		}
 	}
 
+	// Open persistent database connection
+	db, err := connectDB(service)
+	if err != nil {
+		return &Model{
+			queries:         queries,
+			allQueries:      allQueries,
+			tempQueries:     make(map[string]int),
+			selected:        0,
+			err:             fmt.Sprintf("Failed to connect to database: %v", err),
+			service:         service,
+			ready:           false,
+			searchMode:      false,
+			searchQuery:     "",
+			filteredQueries: queries,
+			editMode:        false,
+			help:            help.New(),
+			showHelp:        false,
+			sparklineData:   NewSparklineData(60),
+			lastCommits:     0,
+		}
+	}
+
 	return &Model{
 		queries:         queries,
 		allQueries:      allQueries,
@@ -112,6 +136,7 @@ func NewModel(service string) *Model {
 		selected:        0,
 		results:         "Select a query to run...",
 		service:         service,
+		db:              db,
 		ready:           false,
 		searchMode:      false,
 		searchQuery:     "",
@@ -157,6 +182,13 @@ func (m *Model) addTemporaryQuery(query Query) {
 func (m *Model) isTemporaryQuery(queryName string) bool {
 	_, exists := m.tempQueries[queryName]
 	return exists
+}
+
+func (m *Model) Close() {
+	if m.db != nil {
+		m.db.Close()
+		m.db = nil
+	}
 }
 
 func (m *Model) ensureValidSelection() {

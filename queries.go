@@ -29,13 +29,20 @@ func loadQueries() ([]Query, error) {
 
 func (m *Model) runQuery(query Query) tea.Cmd {
 	return func() tea.Msg {
-		db, err := connectDB(m.service)
-		if err != nil {
-			return queryErrorMsg(fmt.Sprintf("Failed to connect: %v", err))
+		// Check if connection is still alive, reconnect if needed
+		if m.db == nil || m.db.Ping() != nil {
+			newDB, err := connectDB(m.service)
+			if err != nil {
+				return queryErrorMsg(fmt.Sprintf("Failed to reconnect: %v", err))
+			}
+			// Close old connection if it exists
+			if m.db != nil {
+				m.db.Close()
+			}
+			m.db = newDB
 		}
-		defer db.Close()
 
-		result, err := renderConnectionBarChart(db, query.SQL, query.Name, m)
+		result, err := renderConnectionBarChart(m.db, query.SQL, query.Name, m)
 		if err != nil {
 			return queryErrorMsg(fmt.Sprintf("Query failed: %v", err))
 		}

@@ -36,6 +36,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		return m.handleTickMsg()
 	case returnToPickerMsg:
+		m.Close()
 		return m, tea.Quit
 	}
 
@@ -184,6 +185,7 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.updateContent()
 		return m, nil
 	case "esc", "ctrl+c":
+		m.Close()
 		return m, tea.Quit
 	case "c":
 		return m, func() tea.Msg {
