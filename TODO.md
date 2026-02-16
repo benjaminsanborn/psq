@@ -22,7 +22,7 @@
 - [ ] Support `DATABASE_URL` / `PGCONNSTRING` in addition to `~/.pg_service.conf`
 - [ ] Connection health indicator (latency ping in the service picker)
 - [ ] SSL mode selector (currently hardcoded `sslmode=require`)
-- [ ] Connection pooling / reuse — currently opens a new connection per query execution
+- [x] Connection pooling / reuse — currently opens a new connection per query execution
 - [ ] Multiple simultaneous connections (compare across envs side-by-side)
 
 ## AI / ChatGPT
