@@ -40,16 +40,9 @@ func (m *Model) initEditor(query Query) {
 	m.sqlTextarea.SetWidth(80)
 	m.sqlTextarea.SetHeight(10)
 
-	// Initialize AI prompt input
-	m.aiPromptInput = textinput.New()
-	m.aiPromptInput.Placeholder = "Describe what you want to query (press Enter to generate/modify SQL)"
-	m.aiPromptInput.CharLimit = 200
-	m.aiPromptInput.Width = 80
-
 	// Focus on the first input
 	m.editFocus = 0
 	m.nameInput.Focus()
-	m.chatgptResponse = ""
 }
 
 func (m *Model) handleEditModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -203,11 +196,11 @@ func (m *Model) handleSaveQuery() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleTabNavigation(key string) (tea.Model, tea.Cmd) {
-	// Cycle through inputs (5 total: name, description, order, sql, ai-prompt)
+	// Cycle through inputs (4 total: name, description, order, sql)
 	if key == "tab" {
-		m.editFocus = (m.editFocus + 1) % 5
+		m.editFocus = (m.editFocus + 1) % 4
 	} else {
-		m.editFocus = (m.editFocus + 4) % 5
+		m.editFocus = (m.editFocus + 3) % 4
 	}
 
 	// Update focus
@@ -215,7 +208,6 @@ func (m *Model) handleTabNavigation(key string) (tea.Model, tea.Cmd) {
 	m.descInput.Blur()
 	m.orderInput.Blur()
 	m.sqlTextarea.Blur()
-	m.aiPromptInput.Blur()
 
 	switch m.editFocus {
 	case 0:
@@ -226,8 +218,6 @@ func (m *Model) handleTabNavigation(key string) (tea.Model, tea.Cmd) {
 		m.orderInput.Focus()
 	case 3:
 		m.sqlTextarea.Focus()
-	case 4:
-		m.aiPromptInput.Focus()
 	}
 	m.updateContent()
 	return m, nil
@@ -245,15 +235,6 @@ func (m *Model) handleEditInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.orderInput, cmd = m.orderInput.Update(msg)
 	case 3:
 		m.sqlTextarea, cmd = m.sqlTextarea.Update(msg)
-	case 4:
-		// Handle AI prompt input
-		if msg.String() == "enter" && m.aiPromptInput.Value() != "" {
-			// Generate SQL from AI prompt
-			prompt := m.aiPromptInput.Value()
-			m.updateContent()
-			return m, m.callChatGPT(prompt)
-		}
-		m.aiPromptInput, cmd = m.aiPromptInput.Update(msg)
 	}
 	m.updateContent()
 	return m, cmd
