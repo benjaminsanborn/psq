@@ -42,7 +42,13 @@ func (m *Model) runQuery(query Query) tea.Cmd {
 			m.db = newDB
 		}
 
-		result, err := renderConnectionBarChart(m.db, query.SQL, query.Name, m)
+		// Capture local ref — another goroutine (Close) may nil out m.db
+		db := m.db
+		if db == nil {
+			return queryErrorMsg("Connection closed")
+		}
+
+		result, err := renderConnectionBarChart(db, query.SQL, query.Name, m)
 		if err != nil {
 			return queryErrorMsg(fmt.Sprintf("Query failed: %v", err))
 		}
