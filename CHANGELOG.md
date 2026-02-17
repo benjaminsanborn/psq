@@ -1,3 +1,15 @@
+# [1.9.0](https://github.com/benjaminsanborn/psq/compare/v1.8.0...v1.9.0) (2026-02-17)
+
+
+### Bug Fixes
+
+* **db:** prevent nil pointer panic in runQuery goroutine ([c764c3b](https://github.com/benjaminsanborn/psq/commit/c764c3b5052a9718e7600ae03eacc19244c741b7))
+
+
+### Features
+
+* **active:** add interactive Active connections tab ([c0564aa](https://github.com/benjaminsanborn/psq/commit/c0564aa02cecbacfd833bd47d2b0ad56d6a01e84))
+
 # [1.8.0](https://github.com/benjaminsanborn/psq/compare/v1.7.0...v1.8.0) (2026-02-15)
 
 
