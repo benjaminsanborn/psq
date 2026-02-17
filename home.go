@@ -182,14 +182,15 @@ func (s *SparklineData) AddPoint(value float64, timestamp time.Time) {
 	}
 }
 
-// GetTransactionCommits queries the database for transaction commits
-func GetTransactionCommits(db *sql.DB) (float64, error) {
+// GetTransactionCommits queries the database for transaction commits and the current timestamp
+func GetTransactionCommits(db *sql.DB) (float64, time.Time, error) {
 	var commits float64
-	err := db.QueryRow("SELECT SUM(xact_commit) FROM pg_stat_database").Scan(&commits)
+	var now time.Time
+	err := db.QueryRow("SELECT SUM(xact_commit), NOW() FROM pg_stat_database").Scan(&commits, &now)
 	if err != nil {
-		return 0, fmt.Errorf("failed to query transaction commits: %w", err)
+		return 0, time.Time{}, fmt.Errorf("failed to query transaction commits: %w", err)
 	}
-	return commits, nil
+	return commits, now, nil
 }
 
 // RenderSparklineChart renders the transaction commits sparkline
@@ -513,11 +514,10 @@ func RenderHomeDashboard(barChart, sparklineChart, cacheHitRatio, replicationLag
 
 	// Full-width blocking locks widget at the top
 	fullWidthStyle := lipgloss.NewStyle().
-		Width(width - 4).
+		Width(width-4).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
-		Padding(0, 1).
-		MarginBottom(1)
+		Padding(0, 1)
 
 	blockingLocksRow := fullWidthStyle.Render(blockingLocks)
 
@@ -573,12 +573,12 @@ func GetChartWidth(totalWidth int) int {
 
 // BlockingLockInfo holds information about the most blocking PID
 type BlockingLockInfo struct {
-	Valid            bool
-	BlockingPID      int
-	BlockedCount     int
-	Username         string
-	Query            string
-	LongestWaitSec   int
+	Valid             bool
+	BlockingPID       int
+	BlockedCount      int
+	Username          string
+	Query             string
+	LongestWaitSec    int
 	BlockerRunningSec int // How long the blocking query has been running
 }
 
@@ -680,15 +680,14 @@ func GetBlockingLockInfo(db *sql.DB) (BlockingLockInfo, error) {
 func RenderBlockingLocks(db *sql.DB) string {
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("86")).
-		MarginBottom(1)
+		Foreground(lipgloss.Color("86"))
 
 	errorStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("9"))
 
 	info, err := GetBlockingLockInfo(db)
 	if err != nil {
-		return titleStyle.Render("Blocking Locks") + "\n" + 
+		return titleStyle.Render("Blocking Locks") + "\n" +
 			errorStyle.Render(fmt.Sprintf("Error: %v", err))
 	}
 

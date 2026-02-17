@@ -55,6 +55,17 @@ func (m *Model) updateContent() {
 	// Results section
 	if m.err != "" {
 		content += "Error: " + m.err
+	} else if m.activeView != nil && len(m.activeView.Processes) > 0 &&
+		len(m.queries) > 0 && IsActiveTab(m.queries[m.selected].Name) {
+		// Re-render active view from cached data so key presses take effect immediately
+		switch m.activeView.Mode {
+		case ActiveModeDetail:
+			content += RenderActiveDetail(m.activeView, m.width)
+		case ActiveModeConfirmTerminate:
+			content += RenderTerminateConfirm(m.activeView)
+		default:
+			content += RenderActiveList(m.activeView, m.width, m.height)
+		}
 	} else {
 		content += m.results
 	}
@@ -127,15 +138,7 @@ func (m *Model) renderEditMode() string {
 		sqlStyle = sqlStyle.BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("86"))
 	}
-	content += "SQL:\n" + sqlStyle.Render(m.sqlTextarea.View()) + "\n\n"
-
-	// AI Query Generator input
-	aiStyle := lipgloss.NewStyle()
-	if m.editFocus == 4 {
-		aiStyle = aiStyle.BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("86"))
-	}
-	content += "AI Query Generator (Enter to generate/modify SQL):\n" + aiStyle.Render(m.aiPromptInput.View()) + "\n"
+	content += "SQL:\n" + sqlStyle.Render(m.sqlTextarea.View()) + "\n"
 
 	return content
 }
@@ -221,9 +224,18 @@ func (m *Model) customHelpView() string {
 	helpText.WriteString(keyStyle.Render("e") + " " + descStyle.Render("edit query") + "\n")
 	helpText.WriteString(keyStyle.Render("n") + " " + descStyle.Render("new query") + "\n")
 	helpText.WriteString(keyStyle.Render("ctrl+d") + " " + descStyle.Render("delete query (in edit mode)") + "\n")
-	helpText.WriteString(keyStyle.Render("a") + " " + descStyle.Render("chatgpt prompt (in new/edit mode)") + "\n")
 	helpText.WriteString(keyStyle.Render("d") + " " + descStyle.Render("dump queries") + "\n")
 	helpText.WriteString(keyStyle.Render("x") + " " + descStyle.Render("psql prompt") + "\n\n")
+
+	// Active View
+	helpText.WriteString(titleStyle.Render("Active View:") + "\n")
+	helpText.WriteString(keyStyle.Render("↑/k") + " " + descStyle.Render("select previous process") + "\n")
+	helpText.WriteString(keyStyle.Render("↓/j") + " " + descStyle.Render("select next process") + "\n")
+	helpText.WriteString(keyStyle.Render("enter") + " " + descStyle.Render("view process details") + "\n")
+	helpText.WriteString(keyStyle.Render("t") + " " + descStyle.Render("terminate backend") + "\n")
+	helpText.WriteString(keyStyle.Render("c") + " " + descStyle.Render("cancel query") + "\n")
+	helpText.WriteString(keyStyle.Render("y") + " " + descStyle.Render("copy query to clipboard (detail view)") + "\n")
+	helpText.WriteString(keyStyle.Render("esc") + " " + descStyle.Render("back to list / quit") + "\n\n")
 
 	// System
 	helpText.WriteString(titleStyle.Render("System:") + "\n")

@@ -38,13 +38,13 @@ type Model struct {
 	descInput        textinput.Model
 	orderInput       textinput.Model
 	sqlTextarea      textarea.Model
-	aiPromptInput    textinput.Model
-	editFocus        int    // 0=name, 1=description, 2=order, 3=sql, 4=ai-prompt
-	chatgptResponse  string // Store the generated SQL for review
+	editFocus        int    // 0=name, 1=description, 2=order, 3=sql
 	help             help.Model
 	showHelp         bool
 	sparklineData    *SparklineData // Transaction commits sparkline data
 	lastCommits      float64        // Last transaction commit count for rate calculation
+	lastCommitTime   time.Time      // DB timestamp of last commit query for accurate TPS
+	activeView       *ActiveView    // Interactive active connections view (nil when not on Active tab)
 }
 
 type Query struct {
@@ -54,28 +54,7 @@ type Query struct {
 	OrderPosition *int   `json:"order_position,omitempty"` // nil means hidden from top bar
 }
 
-// ChatGPT API types
-type ChatGPTRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-}
-
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type ChatGPTResponse struct {
-	Choices []Choice `json:"choices"`
-}
-
-type Choice struct {
-	Message Message `json:"message"`
-}
-
 // Message types for Bubble Tea
-type chatgptResponseMsg string
-type chatgptErrorMsg string
 type tickMsg time.Time
 type returnToPickerMsg struct{}
 
@@ -93,17 +72,18 @@ func NewModel(service string) *Model {
 		}
 	}
 
-	// Create hardcoded Home tab as first query
+	// Create hardcoded Home tab as first query, Active tab as second
 	homeQuery := HomeQuery()
+	activeQuery := ActiveQuery()
 
-	// Combine Home tab with database queries
-	queries := append([]Query{homeQuery}, dbQueries...)
+	// Combine Home + Active tabs with database queries
+	queries := append([]Query{homeQuery, activeQuery}, dbQueries...)
 
-	// Also load all queries (including hidden ones) for search, but include Home
+	// Also load all queries (including hidden ones) for search, but include Home and Active
 	allQueries := queries
 	if globalQueryDB != nil {
 		if allQueriesFromDB, err := globalQueryDB.LoadAllQueries(); err == nil {
-			allQueries = append([]Query{homeQuery}, allQueriesFromDB...)
+			allQueries = append([]Query{homeQuery, activeQuery}, allQueriesFromDB...)
 		}
 	}
 

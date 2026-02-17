@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/evertras/bubble-table/table"
 	_ "github.com/lib/pq"
 )
 
@@ -136,7 +134,7 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 		return "", fmt.Errorf("failed to get columns: %w", err)
 	}
 
-	// First pass: collect all data to calculate column widths
+	// Collect all data
 	var allRows [][]string
 	values := make([]interface{}, len(columns))
 	valuePtrs := make([]interface{}, len(columns))
@@ -153,86 +151,99 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 		for i, val := range values {
 			if val == nil {
 				row[i] = "NULL"
+			} else if bytes, ok := val.([]byte); ok {
+				row[i] = scrubNewlines(string(bytes))
 			} else {
-				// Handle byte arrays (convert to string)
-				if bytes, ok := val.([]byte); ok {
-					row[i] = strings.ReplaceAll(string(bytes), "\n", " ")
-				} else {
-					row[i] = strings.ReplaceAll(fmt.Sprintf("%v", val), "\n", " ")
-				}
+				row[i] = scrubNewlines(fmt.Sprintf("%v", val))
 			}
 		}
 		allRows = append(allRows, row)
-	}
-
-	// Calculate optimal column widths
-	colWidths := make([]int, len(columns))
-	for i, col := range columns {
-		colWidths[i] = len(col) + 2 // Start with header width + padding
-	}
-
-	for _, row := range allRows {
-		for i, cell := range row {
-			if len(cell)+2 > colWidths[i] {
-				colWidths[i] = len(cell) + 2
-			}
-		}
-	}
-
-	// Create table columns with calculated widths
-	var tableColumns []table.Column
-	for i, col := range columns {
-		// Limit maximum column width to prevent extremely wide columns
-		maxWidth := colWidths[i]
-		if maxWidth > 50 {
-			maxWidth = 50
-		}
-		if maxWidth < 8 {
-			maxWidth = 8
-		}
-		tableColumns = append(tableColumns, table.NewColumn(col, col, maxWidth).WithFiltered(true))
-	}
-
-	// Create table rows with the collected data
-	var tableRows []table.Row
-	for _, row := range allRows {
-		rowData := table.RowData{}
-		for i, cellValue := range row {
-			rowData[columns[i]] = cellValue
-		}
-		tableRows = append(tableRows, table.NewRow(rowData))
 	}
 
 	if err := rows.Err(); err != nil {
 		return "", fmt.Errorf("error iterating rows: %w", err)
 	}
 
-	// Define styles with nice colors
-	baseStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#7C3AED")).
-		Foreground(lipgloss.Color("#E5E7EB"))
+	return renderTable(columns, allRows, len(allRows)), nil
+}
+
+// renderTable renders columns and rows in the same styled plain-text table as the Active tab
+func renderTable(columns []string, allRows [][]string, totalRows int) string {
+	if len(columns) == 0 {
+		return "No columns returned"
+	}
+
+	// Calculate optimal column widths
+	colWidths := make([]int, len(columns))
+	for i, col := range columns {
+		colWidths[i] = len(col) + 1
+	}
+	for _, row := range allRows {
+		for i, cell := range row {
+			if len(cell)+1 > colWidths[i] {
+				colWidths[i] = len(cell) + 1
+			}
+		}
+	}
+
+	// Cap column widths
+	for i := range colWidths {
+		if colWidths[i] > 50 {
+			colWidths[i] = 50
+		}
+		if colWidths[i] < 6 {
+			colWidths[i] = 6
+		}
+	}
 
 	headerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color("#7C3AED")).
 		Bold(true).
-		Padding(0, 1)
+		Foreground(lipgloss.Color("#FFFFFF")).
+		Background(lipgloss.Color("#7C3AED"))
 
-	// Create and configure the bubble table with colors
-	t := table.New(tableColumns).
-		WithRows(tableRows).
-		WithBaseStyle(baseStyle).
-		HeaderStyle(headerStyle).
-		WithMissingDataIndicator(lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#6B7280")).
-			Italic(true).
-			Render("NULL"))
+	rowStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("252"))
 
-	return t.View(), nil
+	dimStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240"))
+
+	var b strings.Builder
+
+	// Header
+	var headerParts []string
+	for i, col := range columns {
+		headerParts = append(headerParts, fmt.Sprintf("%-*s", colWidths[i], truncate(col, colWidths[i])))
+	}
+	b.WriteString(headerStyle.Render(strings.Join(headerParts, " ")))
+	b.WriteString("\n")
+
+	// Rows
+	if len(allRows) == 0 {
+		b.WriteString(dimStyle.Render("  (no rows)"))
+		b.WriteString("\n")
+	} else {
+		for _, row := range allRows {
+			var parts []string
+			for i, cell := range row {
+				parts = append(parts, fmt.Sprintf("%-*s", colWidths[i], truncate(cell, colWidths[i])))
+			}
+			b.WriteString(rowStyle.Render(strings.Join(parts, " ")))
+			b.WriteString("\n")
+		}
+	}
+
+	// Row count
+	b.WriteString(dimStyle.Render(fmt.Sprintf("\n  %d rows", totalRows)))
+
+	return b.String()
 }
 
 func renderConnectionBarChart(db *sql.DB, query string, queryName string, model *Model) (string, error) {
+	// Render interactive Active view
+	if IsActiveTab(queryName) {
+		return renderActiveView(db, model)
+	}
+
 	// Only render charts for the Home query
 	if IsHomeTab(queryName) {
 		// Calculate chart width for responsive rendering
@@ -245,21 +256,25 @@ func renderConnectionBarChart(db *sql.DB, query string, queryName string, model 
 		}
 
 		// Update sparkline data with transaction commits
-		currentCommits, err := GetTransactionCommits(db)
+		currentCommits, dbNow, err := GetTransactionCommits(db)
 		if err != nil {
 			// If we can't get commits, just show the bar chart
 			return barChart, nil
 		}
 
-		// Calculate commits per second (rate of change)
+		// Calculate commits per second using DB timestamps for accurate elapsed time
 		var commitsPerSec float64
-		if model.lastCommits > 0 {
-			commitsPerSec = currentCommits - model.lastCommits
+		if model.lastCommits > 0 && !model.lastCommitTime.IsZero() {
+			elapsed := dbNow.Sub(model.lastCommitTime).Seconds()
+			if elapsed > 0 {
+				commitsPerSec = (currentCommits - model.lastCommits) / elapsed
+			}
 		}
 		model.lastCommits = currentCommits
+		model.lastCommitTime = dbNow
 
 		// Add data point to sparkline
-		model.sparklineData.AddPoint(commitsPerSec, time.Now())
+		model.sparklineData.AddPoint(commitsPerSec, dbNow)
 
 		// Render sparkline chart with responsive width
 		sparklineChart := RenderSparklineChart(model.sparklineData, chartWidth)
@@ -274,4 +289,27 @@ func renderConnectionBarChart(db *sql.DB, query string, queryName string, model 
 		return RenderHomeDashboard(barChart, sparklineChart, cacheHitRatio, replicationLag, blockingLocks, model.width), nil
 	}
 	return executeQuery(db, query)
+}
+
+// renderActiveView fetches active processes and renders the interactive Active view
+func renderActiveView(db *sql.DB, model *Model) (string, error) {
+	if model.activeView == nil {
+		model.activeView = NewActiveView()
+	}
+
+	processes, err := FetchActiveProcesses(db)
+	if err != nil {
+		return "", err
+	}
+
+	model.activeView.UpdateSelection(processes)
+
+	switch model.activeView.Mode {
+	case ActiveModeDetail:
+		return RenderActiveDetail(model.activeView, model.width), nil
+	case ActiveModeConfirmTerminate:
+		return RenderTerminateConfirm(model.activeView), nil
+	default:
+		return RenderActiveList(model.activeView, model.width, model.height), nil
+	}
 }

@@ -66,6 +66,9 @@ func (qdb *QueryDB) initSchema() error {
 		return err
 	}
 
+	// Remove legacy "Active" query now that it's a built-in view
+	_, _ = qdb.db.Exec("DELETE FROM queries WHERE name = 'Active'")
+
 	// Check if order_position column exists (for migration)
 	rows, err := qdb.db.Query("PRAGMA table_info(queries)")
 	if err != nil {
@@ -163,46 +166,40 @@ func (qdb *QueryDB) migrateFromFiles() error {
 func (qdb *QueryDB) createDefaultQueries() error {
 	defaultQueries := []Query{
 		{
-			Name:          "Active",
-			Description:   "Show current active connections",
-			SQL:           "SELECT pid, LEFT(query,50) AS query, LEFT(usename,8) AS name, LEFT(state,10) AS state, LEFT((NOW() - query_start)::text,8) as age, wait_event, wait_event_type FROM pg_stat_activity WHERE state IS NOT NULL AND state != 'idle' ORDER BY NOW() - query_start DESC;",
-			OrderPosition: &[]int{1}[0],
-		},
-		{
 			Name:          "Lock Information",
 			Description:   "Show current locks",
 			SQL:           "SELECT l.pid, l.mode, l.granted, a.usename, a.query FROM pg_locks l JOIN pg_stat_activity a ON l.pid = a.pid WHERE NOT l.granted ORDER BY l.pid;",
-			OrderPosition: &[]int{2}[0],
+			OrderPosition: &[]int{1}[0],
 		},
 		{
 			Name:          "Replication Lag",
 			Description:   "Show replication lag information",
 			SQL:           "SELECT application_name, pg_wal_lsn_diff(sent_lsn, replay_lsn) as lag_bytes, client_addr, state, sent_lsn, write_lsn, flush_lsn, replay_lsn FROM pg_stat_replication;",
-			OrderPosition: &[]int{3}[0],
+			OrderPosition: &[]int{2}[0],
 		},
 		{
 			Name:          "Top Queries",
 			Description:   "Requires pg_stat_statements; identifies heavy hitters",
 			SQL:           "SELECT LEFT(query, 40) AS query, calls, total_exec_time, mean_exec_time, rows, shared_blks_hit, shared_blks_read, temp_blks_written FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 25;",
-			OrderPosition: &[]int{4}[0],
+			OrderPosition: &[]int{3}[0],
 		},
 		{
 			Name:          "Index Creation",
 			Description:   "Show progress of index creation operations",
 			SQL:           "SELECT p.pid, c.relname AS table_name, ic.relname AS index_name, p.phase, p.lockers_done || '/' || p.lockers_total AS locks, p.blocks_done || '/' || p.blocks_total AS blocks, p.tuples_done || '/' || p.tuples_total AS tupes, p.partitions_done || '/' || p.partitions_total AS parts FROM pg_stat_progress_create_index p JOIN pg_class c  ON p.relid = c.oid JOIN pg_class ic ON p.index_relid = ic.oid;",
-			OrderPosition: &[]int{5}[0],
+			OrderPosition: &[]int{4}[0],
 		},
 		{
 			Name:          "Table Replication State",
 			Description:   "The state of logical replication for each table in the public schema",
 			SQL:           "SELECT s.subname AS subscription, r.srsubstate AS table_state, ARRAY_AGG(c.relname ORDER BY c.relname) AS tables FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_subscription_rel r ON r.srrelid = c.oid LEFT JOIN pg_subscription s     ON s.oid = r.srsubid WHERE n.nspname = 'public' AND c.relkind IN ('r','p','f') GROUP BY s.subname, r.srsubstate ORDER BY s.subname, r.srsubstate;",
-			OrderPosition: &[]int{6}[0],
+			OrderPosition: &[]int{5}[0],
 		},
 		{
 			Name:          "Configuration Settings",
 			Description:   "All current PostgreSQL configuration settings",
 			SQL:           "SELECT name, setting, unit, category, short_desc FROM pg_settings ORDER BY category, name;",
-			OrderPosition: &[]int{7}[0],
+			OrderPosition: &[]int{6}[0],
 		},
 	}
 
@@ -400,60 +397,6 @@ func (qdb *QueryDB) GetQuery(name string) (Query, error) {
 	}
 
 	return query, nil
-}
-
-func (qdb *QueryDB) DumpToFile(filePath string) error {
-	// Create the dump database
-	dumpDB, err := sql.Open("sqlite", filePath)
-	if err != nil {
-		return fmt.Errorf("failed to create dump database: %w", err)
-	}
-	defer dumpDB.Close()
-
-	// Create the schema in the dump database
-	schema := `
-		CREATE TABLE IF NOT EXISTS queries (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE,
-			description TEXT NOT NULL,
-			sql TEXT NOT NULL,
-			order_position INTEGER,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_queries_name ON queries(name);
-		CREATE INDEX IF NOT EXISTS idx_queries_order ON queries(order_position);
-	`
-
-	if _, err := dumpDB.Exec(schema); err != nil {
-		return fmt.Errorf("failed to create schema in dump database: %w", err)
-	}
-
-	// Load all queries from current database (including hidden ones)
-	queries, err := qdb.LoadAllQueries()
-	if err != nil {
-		return fmt.Errorf("failed to load queries for dump: %w", err)
-	}
-
-	// Insert queries into dump database
-	for _, query := range queries {
-		var orderPos interface{}
-		if query.OrderPosition != nil {
-			orderPos = *query.OrderPosition
-		}
-
-		_, err := dumpDB.Exec(`
-			INSERT INTO queries (name, description, sql, order_position) 
-			VALUES (?, ?, ?, ?)
-		`, query.Name, query.Description, query.SQL, orderPos)
-
-		if err != nil {
-			return fmt.Errorf("failed to insert query %s into dump: %w", query.Name, err)
-		}
-	}
-
-	return nil
 }
 
 func (qdb *QueryDB) LoadFromDumpFile(filePath string) error {

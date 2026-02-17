@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -12,6 +11,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	zone "github.com/lrstanley/bubblezone"
 )
+
+// terminateResultMsg is sent after a pg_terminate_backend or pg_cancel_backend call
+type terminateResultMsg struct {
+	PID     int
+	Action  string // "terminate" or "cancel"
+	Success bool
+	Error   string
+}
 
 func (m *Model) Init() tea.Cmd {
 	return nil
@@ -29,10 +36,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleQueryResult(msg)
 	case queryErrorMsg:
 		return m.handleQueryError(msg)
-	case chatgptResponseMsg:
-		return m.handleChatGPTResponseMsg(msg)
-	case chatgptErrorMsg:
-		return m.handleChatGPTErrorMsg(msg)
+	case terminateResultMsg:
+		return m.handleTerminateResult(msg)
+	case clipboardResultMsg:
+		if m.activeView != nil {
+			if msg.err != nil {
+				m.activeView.CopyStatus = fmt.Sprintf("Copy failed: %v", msg.err)
+			} else {
+				m.activeView.CopyStatus = "Copied!"
+			}
+			m.updateContent()
+		}
+		return m, nil
 	case tickMsg:
 		return m.handleTickMsg()
 	case returnToPickerMsg:
@@ -62,6 +77,7 @@ func (m *Model) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if i < len(m.queries) {
 				m.selected = i
 				m.ensureValidSelection()
+				m.syncActiveView()
 				m.loading = true
 				m.err = ""
 				m.results = ""
@@ -170,6 +186,19 @@ func (m *Model) handleSearchModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Delegate to active view when on the Active tab
+	if m.activeView != nil && len(m.queries) > 0 && IsActiveTab(m.queries[m.selected].Name) {
+		// In detail or confirm mode, fully delegate all keys
+		if m.activeView.Mode != ActiveModeList {
+			return m.handleActiveViewKeys(msg)
+		}
+		// In list mode, delegate navigation/action keys but let tab-switch keys fall through
+		switch msg.String() {
+		case "up", "k", "down", "j", "enter", "t", "c":
+			return m.handleActiveViewKeys(msg)
+		}
+	}
+
 	switch msg.String() {
 	case "?":
 		if !m.showHelp {
@@ -206,6 +235,7 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selected > 0 {
 			m.selected--
 			m.ensureValidSelection()
+			m.syncActiveView()
 			if len(m.queries) > 0 {
 				m.loading = true
 				m.err = ""
@@ -219,6 +249,7 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selected < len(m.queries)-1 {
 			m.selected++
 			m.ensureValidSelection()
+			m.syncActiveView()
 			if len(m.queries) > 0 {
 				m.loading = true
 				m.err = ""
@@ -252,8 +283,8 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		if len(m.queries) > 0 {
 			m.ensureValidSelection()
-			// Don't allow editing the hardcoded Home tab
-			if m.selected == 0 && IsHomeTab(m.queries[0].Name) {
+			// Don't allow editing the hardcoded Home or Active tabs
+			if IsHomeTab(m.queries[m.selected].Name) || IsActiveTab(m.queries[m.selected].Name) {
 				return m, nil
 			}
 			m.previousSelected = m.selected
@@ -271,8 +302,6 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.initEditor(m.editQuery)
 		m.updateContent()
 		return m, nil
-	case "d":
-		return m.handleDumpQueries()
 	case "x":
 		return m.handlePsqlPrompt()
 	}
@@ -280,23 +309,6 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Update content after any key press
 	if m.ready {
 		m.updateContent()
-	}
-	return m, nil
-}
-
-func (m *Model) handleDumpQueries() (tea.Model, tea.Cmd) {
-	// Dump current queries to default file
-	if globalQueryDB != nil {
-		configDir := os.ExpandEnv("$HOME/.psq")
-		defaultDumpFile := filepath.Join(configDir, "default_queries.db")
-
-		if err := globalQueryDB.DumpToFile(defaultDumpFile); err != nil {
-			m.err = fmt.Sprintf("Failed to dump queries: %v", err)
-		} else {
-			m.err = fmt.Sprintf("Queries dumped to: %s", defaultDumpFile)
-		}
-		m.updateContent()
-		return m, nil
 	}
 	return m, nil
 }
@@ -379,24 +391,170 @@ func (m *Model) handleQueryError(msg queryErrorMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) handleChatGPTResponseMsg(msg chatgptResponseMsg) (tea.Model, tea.Cmd) {
-	sql := string(msg)
-	cmd := m.handleChatGPTResponse(sql)
-	m.updateContent()
-	return m, cmd
-}
-
-func (m *Model) handleChatGPTErrorMsg(msg chatgptErrorMsg) (tea.Model, tea.Cmd) {
-	m.handleChatGPTError(string(msg))
-	m.updateContent()
-	return m, nil
-}
 
 func (m *Model) handleTickMsg() (tea.Model, tea.Cmd) {
 	if len(m.queries) > 0 && m.canRefresh() {
 		m.loading = true
 		m.updateContent()
 		return m, m.runQuery(m.lastQuery)
+	}
+	return m, nil
+}
+
+// syncActiveView initializes or clears activeView based on current tab
+func (m *Model) syncActiveView() {
+	if len(m.queries) > 0 && IsActiveTab(m.queries[m.selected].Name) {
+		if m.activeView == nil {
+			m.activeView = NewActiveView()
+		}
+	} else {
+		m.activeView = nil
+	}
+}
+
+// handleActiveViewKeys handles keyboard input when the Active tab is focused
+func (m *Model) handleActiveViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	av := m.activeView
+	if av == nil {
+		return m, nil
+	}
+
+	switch av.Mode {
+	case ActiveModeList:
+		switch msg.String() {
+		case "up", "k":
+			if av.SelectedIndex > 0 {
+				av.SelectedIndex--
+				if len(av.Processes) > 0 {
+					av.SelectedPID = av.Processes[av.SelectedIndex].PID
+				}
+				av.ensureVisible()
+				m.updateContent()
+			}
+		case "down", "j":
+			if av.SelectedIndex < len(av.Processes)-1 {
+				av.SelectedIndex++
+				if len(av.Processes) > 0 {
+					av.SelectedPID = av.Processes[av.SelectedIndex].PID
+				}
+				av.ensureVisible()
+				m.updateContent()
+			}
+		case "enter":
+			if p := av.SelectedProcess(); p != nil {
+				snap := *p
+				av.DetailProcess = &snap
+				av.Mode = ActiveModeDetail
+				av.LastError = ""
+				av.CopyStatus = ""
+				m.updateContent()
+			}
+		case "t":
+			if p := av.SelectedProcess(); p != nil {
+				snap := *p
+				av.DetailProcess = &snap
+				av.TerminateType = "terminate"
+				av.Mode = ActiveModeConfirmTerminate
+				av.LastError = ""
+				m.updateContent()
+			}
+		case "c":
+			if p := av.SelectedProcess(); p != nil {
+				snap := *p
+				av.DetailProcess = &snap
+				av.TerminateType = "cancel"
+				av.Mode = ActiveModeConfirmTerminate
+				av.LastError = ""
+				m.updateContent()
+			}
+		}
+
+	case ActiveModeDetail:
+		switch msg.String() {
+		case "esc", "ctrl+[":
+			av.DetailProcess = nil
+			av.DetailCompleted = false
+			av.Mode = ActiveModeList
+			av.LastError = ""
+			av.CopyStatus = ""
+			m.updateContent()
+		case "t":
+			if !av.DetailCompleted {
+				av.TerminateType = "terminate"
+				av.Mode = ActiveModeConfirmTerminate
+				av.LastError = ""
+				m.updateContent()
+			}
+		case "c":
+			if !av.DetailCompleted {
+				av.TerminateType = "cancel"
+				av.Mode = ActiveModeConfirmTerminate
+				av.LastError = ""
+				m.updateContent()
+			}
+		case "y":
+			if av.DetailProcess != nil {
+				return m, func() tea.Msg {
+					return clipboardResultMsg{err: copyToClipboard(av.DetailProcess.Query)}
+				}
+			}
+		}
+
+	case ActiveModeConfirmTerminate:
+		switch msg.String() {
+		case "y":
+			if av.DetailProcess != nil {
+				return m, m.executeTerminate(av.DetailProcess.PID, av.TerminateType)
+			}
+		case "n", "esc", "ctrl+[":
+			av.Mode = ActiveModeList
+			av.DetailProcess = nil
+			av.DetailCompleted = false
+			av.LastError = ""
+			m.updateContent()
+		}
+	}
+
+	return m, nil
+}
+
+// executeTerminate runs pg_terminate_backend or pg_cancel_backend asynchronously
+func (m *Model) executeTerminate(pid int, action string) tea.Cmd {
+	return func() tea.Msg {
+		if m.db == nil {
+			return terminateResultMsg{PID: pid, Action: action, Error: "no database connection"}
+		}
+		var err error
+		if action == "cancel" {
+			err = CancelBackend(m.db, pid)
+		} else {
+			err = TerminateBackend(m.db, pid)
+		}
+		if err != nil {
+			return terminateResultMsg{PID: pid, Action: action, Error: err.Error()}
+		}
+		return terminateResultMsg{PID: pid, Action: action, Success: true}
+	}
+}
+
+// handleTerminateResult processes the result of a terminate/cancel action
+func (m *Model) handleTerminateResult(msg terminateResultMsg) (tea.Model, tea.Cmd) {
+	if m.activeView != nil {
+		if msg.Success {
+			m.activeView.Mode = ActiveModeList
+			m.activeView.DetailProcess = nil
+			m.activeView.DetailCompleted = false
+			m.activeView.LastError = ""
+			// Force refresh to reflect the terminated process
+			m.loading = true
+			m.updateContent()
+			return m, m.runQuery(m.lastQuery)
+		}
+		m.activeView.LastError = msg.Error
+		m.activeView.DetailProcess = nil
+		m.activeView.DetailCompleted = false
+		m.activeView.Mode = ActiveModeList
+		m.updateContent()
 	}
 	return m, nil
 }
