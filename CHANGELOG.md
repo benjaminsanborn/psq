@@ -1,3 +1,10 @@
+## [1.9.3](https://github.com/benjaminsanborn/psq/compare/v1.9.2...v1.9.3) (2026-02-19)
+
+
+### Bug Fixes
+
+* address slow blocker query ([a59b2c7](https://github.com/benjaminsanborn/psq/commit/a59b2c7e2dce3fafb37834d2fe8f87625ee72a1e))
+
 ## [1.9.2](https://github.com/benjaminsanborn/psq/compare/v1.9.1...v1.9.2) (2026-02-19)
 
 
