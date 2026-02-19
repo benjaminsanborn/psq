@@ -1,3 +1,10 @@
+## [1.9.2](https://github.com/benjaminsanborn/psq/compare/v1.9.1...v1.9.2) (2026-02-19)
+
+
+### Bug Fixes
+
+* **ui:** prevent index out of range panic when selected exceeds queries length ([cab4785](https://github.com/benjaminsanborn/psq/commit/cab4785ae8aedcac5cfbd890ff11c35d2a76ed1f))
+
 ## [1.9.1](https://github.com/benjaminsanborn/psq/compare/v1.9.0...v1.9.1) (2026-02-19)
 
 
