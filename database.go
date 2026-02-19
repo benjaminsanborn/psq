@@ -164,11 +164,11 @@ func executeQuery(db *sql.DB, query string) (string, error) {
 		return "", fmt.Errorf("error iterating rows: %w", err)
 	}
 
-	return renderTable(columns, allRows, len(allRows)), nil
+	return renderTable(columns, allRows), nil
 }
 
 // renderTable renders columns and rows in the same styled plain-text table as the Active tab
-func renderTable(columns []string, allRows [][]string, totalRows int) string {
+func renderTable(columns []string, allRows [][]string) string {
 	if len(columns) == 0 {
 		return "No columns returned"
 	}
@@ -231,9 +231,6 @@ func renderTable(columns []string, allRows [][]string, totalRows int) string {
 			b.WriteString("\n")
 		}
 	}
-
-	// Row count
-	b.WriteString(dimStyle.Render(fmt.Sprintf("\n  %d rows", totalRows)))
 
 	return b.String()
 }

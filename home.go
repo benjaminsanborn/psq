@@ -571,106 +571,39 @@ func GetChartWidth(totalWidth int) int {
 	return (totalWidth - 8) / 2 // Half width minus padding
 }
 
-// BlockingLockInfo holds information about the most blocking PID
+// BlockingLockInfo holds a summary count of blocked queries
 type BlockingLockInfo struct {
-	Valid             bool
-	BlockingPID       int
-	BlockedCount      int
-	Username          string
-	Query             string
-	LongestWaitSec    int
-	BlockerRunningSec int // How long the blocking query has been running
+	Valid          bool
+	BlockedCount   int
+	LongestWaitSec int
 }
 
-// GetBlockingLockInfo queries for the PID blocking the most queries
+// GetBlockingLockInfo queries for the count of blocked queries and max wait time
 func GetBlockingLockInfo(db *sql.DB) (BlockingLockInfo, error) {
-	// Recursively walk blocking chain to find root blockers
 	sqlQuery := `
-		WITH RECURSIVE blocking_chain AS (
-			-- Start with all direct blocking relationships
-			SELECT 
-				sa.pid AS leaf_pid,
-				sa.pid AS blocked_pid,
-				UNNEST(pg_blocking_pids(sa.pid)) AS blocking_pid,
-				sa.state_change,
-				1 AS depth
-			FROM pg_stat_activity sa
-			WHERE cardinality(pg_blocking_pids(sa.pid)) > 0
-			
-			UNION ALL
-			
-			-- Walk up the chain to find the root blocker
-			SELECT 
-				bc.leaf_pid,
-				bc.blocking_pid AS blocked_pid,
-				UNNEST(pg_blocking_pids(sa.pid)) AS blocking_pid,
-				bc.state_change,
-				bc.depth + 1
-			FROM blocking_chain bc
-			JOIN pg_stat_activity sa ON sa.pid = bc.blocking_pid
-			WHERE cardinality(pg_blocking_pids(sa.pid)) > 0
-		),
-		-- For each leaf (originally blocked PID), find its root blocker
-		leaf_to_root AS (
-			SELECT DISTINCT ON (leaf_pid)
-				leaf_pid,
-				blocking_pid AS root_blocker,
-				state_change
-			FROM blocking_chain
-			ORDER BY leaf_pid, depth DESC
-		),
-		-- Count how many PIDs each root blocker is blocking
-		blocking_summary AS (
-			SELECT 
-				root_blocker,
-				COUNT(DISTINCT leaf_pid) AS blocked_count,
-				MAX(EXTRACT(EPOCH FROM (NOW() - state_change))::int) AS longest_wait_sec
-			FROM leaf_to_root
-			GROUP BY root_blocker
-		)
-		SELECT 
-			bs.root_blocker AS blocking_pid,
-			bs.blocked_count,
-			sa.usename,
-			LEFT(sa.query, 40) AS query,
-			bs.longest_wait_sec,
-			EXTRACT(EPOCH FROM (NOW() - sa.query_start))::int AS blocker_running_sec
-		FROM blocking_summary bs
-		JOIN pg_stat_activity sa ON sa.pid = bs.root_blocker
-		ORDER BY bs.blocked_count DESC, bs.longest_wait_sec DESC
-		LIMIT 1`
+		SELECT
+			COUNT(DISTINCT l.pid) AS blocked_count,
+			COALESCE(MAX(EXTRACT(EPOCH FROM (NOW() - a.state_change))::int), 0) AS longest_wait_sec
+		FROM pg_locks l
+		JOIN pg_stat_activity a ON l.pid = a.pid
+		WHERE NOT l.granted`
 
 	var info BlockingLockInfo
-	var username, queryText sql.NullString
-	var blockingPID, blockedCount, longestWait, blockerRunning sql.NullInt64
+	var blockedCount, longestWait sql.NullInt64
 
-	err := db.QueryRow(sqlQuery).Scan(&blockingPID, &blockedCount, &username, &queryText, &longestWait, &blockerRunning)
-	if err == sql.ErrNoRows {
-		// No blocking locks - this is good!
-		return BlockingLockInfo{Valid: false}, nil
-	}
+	err := db.QueryRow(sqlQuery).Scan(&blockedCount, &longestWait)
 	if err != nil {
 		return BlockingLockInfo{}, fmt.Errorf("failed to query blocking locks: %w", err)
 	}
 
-	if !blockingPID.Valid || !blockedCount.Valid {
+	if !blockedCount.Valid || blockedCount.Int64 == 0 {
 		return BlockingLockInfo{Valid: false}, nil
 	}
 
 	info.Valid = true
-	info.BlockingPID = int(blockingPID.Int64)
 	info.BlockedCount = int(blockedCount.Int64)
-	if username.Valid {
-		info.Username = username.String
-	}
-	if queryText.Valid {
-		info.Query = queryText.String
-	}
 	if longestWait.Valid {
 		info.LongestWaitSec = int(longestWait.Int64)
-	}
-	if blockerRunning.Valid {
-		info.BlockerRunningSec = int(blockerRunning.Int64)
 	}
 
 	return info, nil
@@ -695,11 +628,10 @@ func RenderBlockingLocks(db *sql.DB) string {
 		okStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("10")).
 			PaddingTop(1)
-		return titleStyle.Render("Blocking Locks") + "\n" +
-			okStyle.Render("✓ No blocking locks detected")
+		return titleStyle.Render("Blocked Queries") + "\n" +
+			okStyle.Render("✓ No blocked queries")
 	}
 
-	// We have blocking locks - show the worst offender
 	var waitColor lipgloss.Color
 	switch {
 	case info.LongestWaitSec < 5:
@@ -710,61 +642,18 @@ func RenderBlockingLocks(db *sql.DB) string {
 		waitColor = lipgloss.Color("9") // Red - critical
 	}
 
-	// Color code blocker runtime
-	var runtimeColor lipgloss.Color
-	switch {
-	case info.BlockerRunningSec < 10:
-		runtimeColor = lipgloss.Color("10") // Green - quick query
-	case info.BlockerRunningSec < 60:
-		runtimeColor = lipgloss.Color("11") // Yellow - moderate
-	case info.BlockerRunningSec < 300:
-		runtimeColor = lipgloss.Color("208") // Orange - long
-	default:
-		runtimeColor = lipgloss.Color("9") // Red - very long, likely needs killing
-	}
-
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("9")). // Red for warning
+		Foreground(lipgloss.Color("9")).
 		PaddingTop(1)
-
-	labelStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("244")).
-		Bold(true)
-
-	valueStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("15"))
 
 	waitStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(waitColor)
 
-	runtimeStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(runtimeColor)
+	waitStr := formatDuration(info.LongestWaitSec)
+	header := fmt.Sprintf("⚠ %d blocked queries  •  Max wait: %s", info.BlockedCount, waitStyle.Render(waitStr))
 
-	queryStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("251")).
-		Italic(true)
-
-	header := fmt.Sprintf("⚠ PID %d is blocking %d queries", info.BlockingPID, info.BlockedCount)
-
-	// Format runtime nicely
-	runtimeStr := formatDuration(info.BlockerRunningSec)
-
-	details := lipgloss.JoinHorizontal(lipgloss.Top,
-		labelStyle.Render("User: "),
-		valueStyle.Render(info.Username),
-		labelStyle.Render("  •  Wait: "),
-		waitStyle.Render(fmt.Sprintf("%ds", info.LongestWaitSec)),
-		labelStyle.Render("  •  Running: "),
-		runtimeStyle.Render(runtimeStr),
-	)
-
-	queryText := queryStyle.Render(info.Query)
-
-	return titleStyle.Render("Blocking Locks") + "\n" +
-		headerStyle.Render(header) + "\n" +
-		details + "\n" +
-		queryText
+	return titleStyle.Render("Blocked Queries") + "\n" +
+		headerStyle.Render(header)
 }
