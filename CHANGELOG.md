@@ -1,3 +1,10 @@
+## [1.9.1](https://github.com/benjaminsanborn/psq/compare/v1.9.0...v1.9.1) (2026-02-19)
+
+
+### Bug Fixes
+
+* **active:** prevent nil pointer race in renderActiveView goroutine ([4423014](https://github.com/benjaminsanborn/psq/commit/4423014b140c03de02161be1184cb2fdca05bf84))
+
 # [1.9.0](https://github.com/benjaminsanborn/psq/compare/v1.8.0...v1.9.0) (2026-02-17)
 
 
