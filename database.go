@@ -296,20 +296,22 @@ func renderActiveView(db *sql.DB, model *Model) (string, error) {
 	if model.activeView == nil {
 		model.activeView = NewActiveView()
 	}
+	// Capture local ref — tab switches in the main goroutine may nil out model.activeView
+	av := model.activeView
 
 	processes, err := FetchActiveProcesses(db)
 	if err != nil {
 		return "", err
 	}
 
-	model.activeView.UpdateSelection(processes)
+	av.UpdateSelection(processes)
 
-	switch model.activeView.Mode {
+	switch av.Mode {
 	case ActiveModeDetail:
-		return RenderActiveDetail(model.activeView, model.width), nil
+		return RenderActiveDetail(av, model.width), nil
 	case ActiveModeConfirmTerminate:
-		return RenderTerminateConfirm(model.activeView), nil
+		return RenderTerminateConfirm(av), nil
 	default:
-		return RenderActiveList(model.activeView, model.width, model.height), nil
+		return RenderActiveList(av, model.width, model.height), nil
 	}
 }
