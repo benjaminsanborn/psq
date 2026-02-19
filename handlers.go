@@ -187,7 +187,7 @@ func (m *Model) handleSearchModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Delegate to active view when on the Active tab
-	if m.activeView != nil && len(m.queries) > 0 && IsActiveTab(m.queries[m.selected].Name) {
+	if m.activeView != nil && m.selected < len(m.queries) && IsActiveTab(m.queries[m.selected].Name) {
 		// In detail or confirm mode, fully delegate all keys
 		if m.activeView.Mode != ActiveModeList {
 			return m.handleActiveViewKeys(msg)
@@ -403,7 +403,7 @@ func (m *Model) handleTickMsg() (tea.Model, tea.Cmd) {
 
 // syncActiveView initializes or clears activeView based on current tab
 func (m *Model) syncActiveView() {
-	if len(m.queries) > 0 && IsActiveTab(m.queries[m.selected].Name) {
+	if m.selected < len(m.queries) && IsActiveTab(m.queries[m.selected].Name) {
 		if m.activeView == nil {
 			m.activeView = NewActiveView()
 		}

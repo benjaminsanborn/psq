@@ -56,7 +56,7 @@ func (m *Model) updateContent() {
 	if m.err != "" {
 		content += "Error: " + m.err
 	} else if m.activeView != nil && len(m.activeView.Processes) > 0 &&
-		len(m.queries) > 0 && IsActiveTab(m.queries[m.selected].Name) {
+		m.selected < len(m.queries) && IsActiveTab(m.queries[m.selected].Name) {
 		// Re-render active view from cached data so key presses take effect immediately
 		switch m.activeView.Mode {
 		case ActiveModeDetail:
