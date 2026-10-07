@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/benjaminsanborn/psq/compare/v1.9.3...v1.10.0) (2026-10-07)
+
+
+### Features
+
+* **db:** support AWS RDS IAM authentication ([282d9ae](https://github.com/benjaminsanborn/psq/commit/282d9aee71328ad13be305ba480db32e34203732))
+
 ## [1.9.3](https://github.com/benjaminsanborn/psq/compare/v1.9.2...v1.9.3) (2026-02-19)
 
 
