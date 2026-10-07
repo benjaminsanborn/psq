@@ -16,6 +16,17 @@ type DBConfig struct {
 	Database string
 	User     string
 	Password string
+
+	// psq-specific settings, read from "#psq:key=value" comment lines inside
+	// a service block so libpq/psql still accept the file.
+	Auth       string // "rds-iam" enables AWS RDS IAM authentication
+	AWSRegion  string
+	AWSProfile string
+}
+
+// UsesRDSIAM reports whether the service authenticates with RDS IAM tokens.
+func (c *DBConfig) UsesRDSIAM() bool {
+	return c.Auth == "rds-iam"
 }
 
 func getDBConfig(serviceName string) (*DBConfig, error) {
@@ -31,6 +42,21 @@ func getDBConfig(serviceName string) (*DBConfig, error) {
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+		if directive, ok := strings.CutPrefix(line, "#psq:"); ok && currentService == serviceName {
+			parts := strings.SplitN(directive, "=", 2)
+			if len(parts) == 2 {
+				value := strings.TrimSpace(parts[1])
+				switch strings.TrimSpace(parts[0]) {
+				case "auth":
+					config.Auth = value
+				case "aws_region":
+					config.AWSRegion = value
+				case "aws_profile":
+					config.AWSProfile = value
+				}
+			}
+			continue
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -107,12 +133,18 @@ func connectDB(serviceName string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	dsn := fmt.Sprintf("host=%s port=%s dbname=%s user=%s password=%s sslmode=require",
-		config.Host, config.Port, config.Database, config.User, config.Password)
-
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	var db *sql.DB
+	if config.UsesRDSIAM() {
+		connector, err := newRDSIAMConnector(config)
+		if err != nil {
+			return nil, err
+		}
+		db = sql.OpenDB(connector)
+	} else {
+		db, err = sql.Open("postgres", buildDSN(config, config.Password))
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to database: %w", err)
+		}
 	}
 
 	if err := db.Ping(); err != nil {
@@ -120,6 +152,17 @@ func connectDB(serviceName string) (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+// buildDSN renders a lib/pq key/value connection string, quoting values so
+// passwords (and IAM tokens) containing special characters survive.
+func buildDSN(config *DBConfig, password string) string {
+	quote := func(v string) string {
+		v = strings.ReplaceAll(v, `\`, `\\`)
+		return "'" + strings.ReplaceAll(v, "'", `\'`) + "'"
+	}
+	return fmt.Sprintf("host=%s port=%s dbname=%s user=%s password=%s sslmode=require",
+		quote(config.Host), quote(config.Port), quote(config.Database), quote(config.User), quote(password))
 }
 
 func executeQuery(db *sql.DB, query string) (string, error) {

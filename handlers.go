@@ -336,7 +336,19 @@ func (m *Model) handlePsqlPrompt() (tea.Model, tea.Cmd) {
 	cmd.Stderr = os.Stderr
 
 	// Set PGPASSWORD environment variable
-	cmd.Env = append(os.Environ(), "PGPASSWORD="+config.Password)
+	password := config.Password
+	if config.UsesRDSIAM() {
+		password, err = rdsIAMTokenForConfig(config)
+		if err != nil {
+			m.err = fmt.Sprintf("Failed to get RDS IAM token: %v", err)
+			m.updateContent()
+			return m, nil
+		}
+	}
+	cmd.Env = append(os.Environ(), "PGPASSWORD="+password)
+	if config.UsesRDSIAM() {
+		cmd.Env = append(cmd.Env, "PGSSLMODE=require")
+	}
 
 	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 		if err != nil {

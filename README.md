@@ -171,6 +171,23 @@ sslmode=require    # optional SSL settings
 
 See [PostgreSQL documentation](https://www.postgresql.org/docs/current/libpq-pgservice.html) for more options.
 
+#### AWS RDS IAM Authentication
+
+To connect to RDS or Aurora with IAM auth instead of a password, add `#psq:` lines to the service block. They are written as comments so `psql` and libpq can still read the file:
+
+```ini
+[prod-iam]
+host=mydb.cluster-abc123.us-east-1.rds.amazonaws.com
+port=5432
+dbname=app
+user=iam_db_user
+#psq:auth=rds-iam
+#psq:aws_profile=prod        # optional, defaults to AWS_PROFILE / default chain
+#psq:aws_region=us-east-1    # optional, inferred from the RDS hostname
+```
+
+psq uses the standard AWS credential chain (env vars, `~/.aws/config` including SSO, instance roles) and creates a new 15-minute token for each new connection, so long sessions stay connected. The `x` psql prompt receives a fresh token too. The database user needs `GRANT rds_iam TO iam_db_user`, and the IAM principal needs `rds-db:connect`.
+
 ### AI Features
 
 To enable ChatGPT query generation:
