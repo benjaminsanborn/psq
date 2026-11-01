@@ -279,10 +279,6 @@ func renderTable(columns []string, allRows [][]string) string {
 }
 
 func renderConnectionBarChart(db *sql.DB, query string, queryName string, model *Model) (string, error) {
-	// Render interactive Active view
-	if IsActiveTab(queryName) {
-		return renderActiveView(db, model)
-	}
 
 	// Only render charts for the Home query
 	if IsHomeTab(queryName) {
@@ -329,29 +325,4 @@ func renderConnectionBarChart(db *sql.DB, query string, queryName string, model 
 		return RenderHomeDashboard(barChart, sparklineChart, cacheHitRatio, replicationLag, blockingLocks, model.width), nil
 	}
 	return executeQuery(db, query)
-}
-
-// renderActiveView fetches active processes and renders the interactive Active view
-func renderActiveView(db *sql.DB, model *Model) (string, error) {
-	if model.activeView == nil {
-		model.activeView = NewActiveView()
-	}
-	// Capture local ref — tab switches in the main goroutine may nil out model.activeView
-	av := model.activeView
-
-	processes, err := FetchActiveProcesses(db)
-	if err != nil {
-		return "", err
-	}
-
-	av.UpdateSelection(processes)
-
-	switch av.Mode {
-	case ActiveModeDetail:
-		return RenderActiveDetail(av, model.width), nil
-	case ActiveModeConfirmTerminate:
-		return RenderTerminateConfirm(av), nil
-	default:
-		return RenderActiveList(av, model.width, model.height), nil
-	}
 }

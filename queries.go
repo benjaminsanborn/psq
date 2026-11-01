@@ -9,6 +9,10 @@ import (
 type queryResultMsg string
 type queryErrorMsg string
 
+// activeProcessesMsg carries freshly fetched processes back to the main
+// goroutine, which owns ActiveView state
+type activeProcessesMsg []ActiveProcess
+
 var globalQueryDB *QueryDB
 
 func initQueryDB() error {
@@ -46,6 +50,14 @@ func (m *Model) runQuery(query Query) tea.Cmd {
 		db := m.db
 		if db == nil {
 			return queryErrorMsg("Connection closed")
+		}
+
+		if IsActiveTab(query.Name) {
+			processes, err := FetchActiveProcesses(db)
+			if err != nil {
+				return queryErrorMsg(fmt.Sprintf("Query failed: %v", err))
+			}
+			return activeProcessesMsg(processes)
 		}
 
 		result, err := renderConnectionBarChart(db, query.SQL, query.Name, m)

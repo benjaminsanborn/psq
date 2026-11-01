@@ -36,6 +36,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleQueryResult(msg)
 	case queryErrorMsg:
 		return m.handleQueryError(msg)
+	case activeProcessesMsg:
+		return m.handleActiveProcesses(msg)
 	case terminateResultMsg:
 		return m.handleTerminateResult(msg)
 	case clipboardResultMsg:
@@ -394,6 +396,19 @@ func (m *Model) handleQueryResult(msg queryResultMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// handleActiveProcesses applies fetched processes to the Active view on the main goroutine
+func (m *Model) handleActiveProcesses(processes activeProcessesMsg) (tea.Model, tea.Cmd) {
+	if m.activeView != nil {
+		m.activeView.UpdateSelection(processes)
+	}
+	// Fallback for the empty state; updateContent renders from activeView when it has processes
+	m.results = ""
+	if m.activeView != nil && len(m.activeView.Processes) == 0 {
+		m.results = RenderActiveList(m.activeView, m.width, m.height)
+	}
+	return m.handleQueryResult(queryResultMsg(m.results))
 }
 
 func (m *Model) handleQueryError(msg queryErrorMsg) (tea.Model, tea.Cmd) {
