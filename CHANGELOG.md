@@ -1,3 +1,10 @@
+## [1.10.1](https://github.com/benjaminsanborn/psq/compare/v1.10.0...v1.10.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **active:** apply process refresh on main goroutine to prevent index panic ([ecedc03](https://github.com/benjaminsanborn/psq/commit/ecedc0330258b778cf1a7d2174fbb0ec47592398))
+
 # [1.10.0](https://github.com/benjaminsanborn/psq/compare/v1.9.3...v1.10.0) (2026-10-07)
 
 
