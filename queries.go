@@ -1,17 +1,70 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-type queryResultMsg string
-type queryErrorMsg string
+// Query results are tagged with the sequence number of the runQuery call that
+// produced them. Only the latest dispatch is applied; anything older is a
+// stale response for a tab the user already left.
+type queryResultMsg struct {
+	seq    int
+	result string
+}
+
+type queryErrorMsg struct {
+	seq int
+	err string
+}
 
 // activeProcessesMsg carries freshly fetched processes back to the main
 // goroutine, which owns ActiveView state
-type activeProcessesMsg []ActiveProcess
+type activeProcessesMsg struct {
+	seq       int
+	processes []ActiveProcess
+}
+
+// homeDataMsg carries Home dashboard data back to the main goroutine, which
+// owns the sparkline history and commit-rate state
+type homeDataMsg struct {
+	seq  int
+	data homeData
+}
+
+// dbConnectedMsg hands a newly opened connection to the main goroutine, which
+// owns m.db, so it can install it and re-run the query
+type dbConnectedMsg struct {
+	seq   int
+	db    *sql.DB
+	query Query
+}
+
+// psqlExitMsg is sent when the psql subprocess opened with "x" exits
+type psqlExitMsg struct {
+	err error
+}
+
+const (
+	refreshInterval   = 1 * time.Second
+	maxRefreshBackoff = 30 * time.Second
+)
+
+// refreshDelay returns how long to wait before the next auto-refresh, backing
+// off exponentially while queries keep failing
+func refreshDelay(consecutiveErrors int) time.Duration {
+	delay := refreshInterval
+	for i := 1; i < consecutiveErrors; i++ {
+		delay *= 2
+		if delay >= maxRefreshBackoff {
+			return maxRefreshBackoff
+		}
+	}
+	return delay
+}
 
 var globalQueryDB *QueryDB
 
@@ -31,40 +84,45 @@ func loadQueries() ([]Query, error) {
 	return globalQueryDB.LoadQueries()
 }
 
+// runQuery must be called from the main goroutine (Update). It snapshots the
+// model state the query needs; the returned command touches only that
+// snapshot and reports back through messages, never by writing to m.
 func (m *Model) runQuery(query Query) tea.Cmd {
-	return func() tea.Msg {
-		// Check if connection is still alive, reconnect if needed
-		if m.db == nil || m.db.Ping() != nil {
-			newDB, err := connectDB(m.service)
-			if err != nil {
-				return queryErrorMsg(fmt.Sprintf("Failed to reconnect: %v", err))
-			}
-			// Close old connection if it exists
-			if m.db != nil {
-				m.db.Close()
-			}
-			m.db = newDB
-		}
+	m.querySeq++
+	seq := m.querySeq
+	db := m.db
+	service := m.service
+	chartWidth := GetChartWidth(m.width)
 
-		// Capture local ref — another goroutine (Close) may nil out m.db
-		db := m.db
+	return func() tea.Msg {
 		if db == nil {
-			return queryErrorMsg("Connection closed")
+			newDB, err := connectDB(service)
+			if err != nil {
+				return queryErrorMsg{seq: seq, err: fmt.Sprintf("Failed to connect: %v", err)}
+			}
+			return dbConnectedMsg{seq: seq, db: newDB, query: query}
 		}
 
 		if IsActiveTab(query.Name) {
 			processes, err := FetchActiveProcesses(db)
 			if err != nil {
-				return queryErrorMsg(fmt.Sprintf("Query failed: %v", err))
+				return queryErrorMsg{seq: seq, err: fmt.Sprintf("Query failed: %v", err)}
 			}
-			return activeProcessesMsg(processes)
+			return activeProcessesMsg{seq: seq, processes: processes}
 		}
 
-		result, err := renderConnectionBarChart(db, query.SQL, query.Name, m)
+		if IsHomeTab(query.Name) {
+			data, err := fetchHomeData(db, query.SQL, chartWidth)
+			if err != nil {
+				return queryErrorMsg{seq: seq, err: fmt.Sprintf("Query failed: %v", err)}
+			}
+			return homeDataMsg{seq: seq, data: data}
+		}
+
+		result, err := executeQuery(db, query.SQL)
 		if err != nil {
-			return queryErrorMsg(fmt.Sprintf("Query failed: %v", err))
+			return queryErrorMsg{seq: seq, err: fmt.Sprintf("Query failed: %v", err)}
 		}
-
-		return queryResultMsg(result)
+		return queryResultMsg{seq: seq, result: result}
 	}
 }

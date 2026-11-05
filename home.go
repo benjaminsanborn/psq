@@ -149,6 +149,63 @@ func RenderHomeChart(db *sql.DB, query string, chartWidth int) (string, error) {
 	return result, nil
 }
 
+// homeData is everything the Home dashboard reads from the database in one
+// refresh. Widgets that don't depend on model state are rendered in the
+// fetching goroutine; the commit counter is returned raw so the main
+// goroutine can turn it into a rate against its own history.
+type homeData struct {
+	barChart       string
+	commits        float64
+	commitsAt      time.Time
+	commitsOK      bool
+	cacheHitRatio  string
+	replicationLag string
+	blockingLocks  string
+}
+
+// fetchHomeData runs the Home dashboard queries. It must not touch the Model.
+func fetchHomeData(db *sql.DB, query string, chartWidth int) (homeData, error) {
+	barChart, err := RenderHomeChart(db, query, chartWidth)
+	if err != nil {
+		return homeData{}, err
+	}
+	data := homeData{barChart: barChart}
+
+	if commits, at, err := GetTransactionCommits(db); err == nil {
+		data.commits, data.commitsAt, data.commitsOK = commits, at, true
+	} else {
+		// Without commit stats the rest of the dashboard isn't rendered
+		return data, nil
+	}
+
+	data.cacheHitRatio = RenderCacheHitRatio(db)
+	data.replicationLag = RenderReplicationLag(db)
+	data.blockingLocks = RenderBlockingLocks(db)
+	return data, nil
+}
+
+// renderHome folds a Home refresh into the commit-rate history and renders
+// the dashboard. Call it only from the main goroutine.
+func (m *Model) renderHome(data homeData) string {
+	if !data.commitsOK {
+		return data.barChart
+	}
+
+	// Commits per second, using DB timestamps for accurate elapsed time
+	var commitsPerSec float64
+	if m.lastCommits > 0 && !m.lastCommitTime.IsZero() {
+		if elapsed := data.commitsAt.Sub(m.lastCommitTime).Seconds(); elapsed > 0 {
+			commitsPerSec = (data.commits - m.lastCommits) / elapsed
+		}
+	}
+	m.lastCommits = data.commits
+	m.lastCommitTime = data.commitsAt
+	m.sparklineData.AddPoint(commitsPerSec, data.commitsAt)
+
+	sparklineChart := RenderSparklineChart(m.sparklineData, GetChartWidth(m.width))
+	return RenderHomeDashboard(data.barChart, sparklineChart, data.cacheHitRatio, data.replicationLag, data.blockingLocks, m.width)
+}
+
 // IsHomeTab checks if the given query is the Home tab
 func IsHomeTab(queryName string) bool {
 	return queryName == "Home"

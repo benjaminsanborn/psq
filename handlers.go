@@ -38,6 +38,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleQueryError(msg)
 	case activeProcessesMsg:
 		return m.handleActiveProcesses(msg)
+	case homeDataMsg:
+		return m.handleHomeData(msg)
+	case dbConnectedMsg:
+		return m.handleDBConnected(msg)
+	case psqlExitMsg:
+		if msg.err != nil {
+			m.err = fmt.Sprintf("Failed to open psql: %v", msg.err)
+			m.updateContent()
+		}
+		return m, nil
 	case terminateResultMsg:
 		return m.handleTerminateResult(msg)
 	case clipboardResultMsg:
@@ -369,10 +379,7 @@ func (m *Model) handlePsqlPrompt() (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-		if err != nil {
-			return queryErrorMsg(fmt.Sprintf("Failed to open psql: %v", err))
-		}
-		return nil
+		return psqlExitMsg{err: err}
 	})
 }
 
@@ -405,35 +412,80 @@ func (m *Model) handleWindowSizeMsg(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) 
 }
 
 func (m *Model) handleQueryResult(msg queryResultMsg) (tea.Model, tea.Cmd) {
-	m.results = string(msg)
+	if msg.seq != m.querySeq {
+		return m, nil // stale: a newer query is in flight and will schedule the next tick
+	}
+	return m.applyResult(msg.result)
+}
+
+// applyResult records a successful refresh and schedules the next tick
+func (m *Model) applyResult(results string) (tea.Model, tea.Cmd) {
+	m.results = results
+	m.err = ""
 	m.loading = false
+	m.consecutiveErrors = 0
 	m.lastRefreshAt = time.Now()
 	m.updateContent()
-	return m, tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+	return m, scheduleTick(refreshInterval)
+}
+
+func scheduleTick(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
 
 // handleActiveProcesses applies fetched processes to the Active view on the main goroutine
-func (m *Model) handleActiveProcesses(processes activeProcessesMsg) (tea.Model, tea.Cmd) {
+func (m *Model) handleActiveProcesses(msg activeProcessesMsg) (tea.Model, tea.Cmd) {
+	if msg.seq != m.querySeq {
+		return m, nil
+	}
 	if m.activeView != nil {
-		m.activeView.UpdateSelection(processes)
+		m.activeView.UpdateSelection(msg.processes)
 	}
 	// Fallback for the empty state; updateContent renders from activeView when it has processes
-	m.results = ""
+	results := ""
 	if m.activeView != nil && len(m.activeView.Processes) == 0 {
-		m.results = RenderActiveList(m.activeView, m.width, m.height)
+		results = RenderActiveList(m.activeView, m.width, m.height)
 	}
-	return m.handleQueryResult(queryResultMsg(m.results))
+	return m.applyResult(results)
+}
+
+// handleHomeData folds Home dashboard data into model state on the main goroutine
+func (m *Model) handleHomeData(msg homeDataMsg) (tea.Model, tea.Cmd) {
+	if msg.seq != m.querySeq {
+		return m, nil
+	}
+	return m.applyResult(m.renderHome(msg.data))
+}
+
+// handleDBConnected installs a connection opened in the background and
+// re-runs the query that needed it
+func (m *Model) handleDBConnected(msg dbConnectedMsg) (tea.Model, tea.Cmd) {
+	if m.db == nil {
+		m.db = msg.db
+	} else {
+		// Another dispatch connected first; keep the installed connection
+		msg.db.Close()
+	}
+	if msg.seq != m.querySeq {
+		return m, nil
+	}
+	return m, m.runQuery(msg.query)
 }
 
 func (m *Model) handleQueryError(msg queryErrorMsg) (tea.Model, tea.Cmd) {
-	m.err = string(msg)
+	if msg.seq != m.querySeq {
+		return m, nil
+	}
+	m.err = msg.err
 	m.loading = false
+	m.consecutiveErrors++
+	m.lastRefreshAt = time.Now()
 	m.updateContent()
-	return m, nil
+	// Keep refreshing so a transient failure doesn't freeze the view
+	return m, scheduleTick(refreshDelay(m.consecutiveErrors))
 }
-
 
 func (m *Model) handleTickMsg() (tea.Model, tea.Cmd) {
 	if len(m.queries) > 0 && m.canRefresh() {
@@ -563,15 +615,16 @@ func (m *Model) handleActiveViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // executeTerminate runs pg_terminate_backend or pg_cancel_backend asynchronously
 func (m *Model) executeTerminate(pid int, action string) tea.Cmd {
+	db := m.db
 	return func() tea.Msg {
-		if m.db == nil {
+		if db == nil {
 			return terminateResultMsg{PID: pid, Action: action, Error: "no database connection"}
 		}
 		var err error
 		if action == "cancel" {
-			err = CancelBackend(m.db, pid)
+			err = CancelBackend(db, pid)
 		} else {
-			err = TerminateBackend(m.db, pid)
+			err = TerminateBackend(db, pid)
 		}
 		if err != nil {
 			return terminateResultMsg{PID: pid, Action: action, Error: err.Error()}
