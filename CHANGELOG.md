@@ -1,3 +1,13 @@
+## [1.10.2](https://github.com/benjaminsanborn/psq/compare/v1.10.1...v1.10.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **db:** honor .pgpass and sslmode from the service file ([f11d52c](https://github.com/benjaminsanborn/psq/commit/f11d52c503637e75bea41883b938792f42ac1c79))
+* **query:** stop rename from duplicating queries and keep built-in tabs ([e2f2cd8](https://github.com/benjaminsanborn/psq/commit/e2f2cd8df88926edbbe86dcc691a25cf4d68b12f))
+* **refresh:** keep model updates on the main goroutine and drop stale results ([f264830](https://github.com/benjaminsanborn/psq/commit/f2648305284e742ed6e89b753517341f93ae64e2))
+* **ui:** measure display width when truncating and padding text ([577c231](https://github.com/benjaminsanborn/psq/commit/577c23155024f03d21e9c9a5499bebe10ba8996f))
+
 ## [1.10.1](https://github.com/benjaminsanborn/psq/compare/v1.10.0...v1.10.1) (2026-11-01)
 
 
