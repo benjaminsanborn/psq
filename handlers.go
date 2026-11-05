@@ -172,14 +172,14 @@ func (m *Model) handleSearchModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.updateContent()
 		}
 	case "backspace", "ctrl+h":
-		if len(m.searchQuery) > 0 {
-			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+		if r := []rune(m.searchQuery); len(r) > 0 {
+			m.searchQuery = string(r[:len(r)-1])
 			m.filterQueries()
 			m.updateContent()
 		}
 	default:
-		if len(msg.String()) == 1 {
-			m.searchQuery += msg.String()
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+			m.searchQuery += string(msg.Runes)
 			m.filterQueries()
 			m.updateContent()
 		}

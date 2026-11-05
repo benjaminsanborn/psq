@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	_ "github.com/lib/pq"
 )
 
@@ -219,12 +220,12 @@ func renderTable(columns []string, allRows [][]string) string {
 	// Calculate optimal column widths
 	colWidths := make([]int, len(columns))
 	for i, col := range columns {
-		colWidths[i] = len(col) + 1
+		colWidths[i] = ansi.StringWidth(col) + 1
 	}
 	for _, row := range allRows {
 		for i, cell := range row {
-			if len(cell)+1 > colWidths[i] {
-				colWidths[i] = len(cell) + 1
+			if w := ansi.StringWidth(cell) + 1; w > colWidths[i] {
+				colWidths[i] = w
 			}
 		}
 	}
@@ -255,7 +256,7 @@ func renderTable(columns []string, allRows [][]string) string {
 	// Header
 	var headerParts []string
 	for i, col := range columns {
-		headerParts = append(headerParts, fmt.Sprintf("%-*s", colWidths[i], truncate(col, colWidths[i])))
+		headerParts = append(headerParts, fitWidth(col, colWidths[i]))
 	}
 	b.WriteString(headerStyle.Render(strings.Join(headerParts, " ")))
 	b.WriteString("\n")
@@ -268,7 +269,7 @@ func renderTable(columns []string, allRows [][]string) string {
 		for _, row := range allRows {
 			var parts []string
 			for i, cell := range row {
-				parts = append(parts, fmt.Sprintf("%-*s", colWidths[i], truncate(cell, colWidths[i])))
+				parts = append(parts, fitWidth(cell, colWidths[i]))
 			}
 			b.WriteString(rowStyle.Render(strings.Join(parts, " ")))
 			b.WriteString("\n")

@@ -9,13 +9,14 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ActiveViewMode represents the current mode of the Active view
 type ActiveViewMode int
 
 const (
-	ActiveModeList             ActiveViewMode = iota
+	ActiveModeList ActiveViewMode = iota
 	ActiveModeDetail
 	ActiveModeConfirmTerminate
 )
@@ -37,13 +38,13 @@ type ActiveProcess struct {
 
 // ActiveView holds the state for the interactive Active tab
 type ActiveView struct {
-	Processes     []ActiveProcess
-	SelectedIndex int
-	SelectedPID   int    // preserved across refreshes
-	Mode          ActiveViewMode
-	TerminateType string // "terminate" or "cancel"
-	LastError     string
-	ScrollOffset  int
+	Processes       []ActiveProcess
+	SelectedIndex   int
+	SelectedPID     int // preserved across refreshes
+	Mode            ActiveViewMode
+	TerminateType   string // "terminate" or "cancel"
+	LastError       string
+	ScrollOffset    int
 	DetailProcess   *ActiveProcess // snapshot of the process when entering detail/confirm mode
 	DetailCompleted bool           // true when the detail PID is no longer in pg_stat_activity
 	CopyStatus      string         // brief feedback after clipboard copy ("Copied!" or error)
@@ -293,18 +294,14 @@ func RenderActiveList(av *ActiveView, width, height int) string {
 
 	for i := av.ScrollOffset; i < end; i++ {
 		p := av.Processes[i]
-		queryTrunc := scrubNewlines(p.Query)
-		if len(queryTrunc) > queryW {
-			queryTrunc = queryTrunc[:queryW-1] + "~"
-		}
-
-		line := fmt.Sprintf("%-*d %-*s %-*s %-*s %-*s %-*s",
-			pidW, p.PID,
-			userW, truncate(p.Username, userW),
-			stateW, truncate(p.State, stateW),
-			durationW, truncate(p.Duration, durationW),
-			waitW, truncate(p.WaitEvent, waitW),
-			queryW, queryTrunc)
+		line := strings.Join([]string{
+			padRight(fmt.Sprintf("%d", p.PID), pidW),
+			fitWidth(p.Username, userW),
+			fitWidth(p.State, stateW),
+			fitWidth(p.Duration, durationW),
+			fitWidth(p.WaitEvent, waitW),
+			fitWidth(scrubNewlines(p.Query), queryW),
+		}, " ")
 
 		if i == av.SelectedIndex {
 			b.WriteString(selectedStyle.Render(truncate(line, width-2)))
@@ -443,18 +440,30 @@ func RenderTerminateConfirm(av *ActiveView) string {
 	return b.String()
 }
 
-// truncate shortens a string to max length
+// truncate shortens s to at most max terminal cells, marking the cut with
+// "~". It measures display width, so multi-byte and wide characters are
+// never split.
 func truncate(s string, max int) string {
 	if max <= 0 {
 		return ""
 	}
-	if len(s) <= max {
+	if ansi.StringWidth(s) <= max {
 		return s
 	}
-	if max <= 1 {
-		return "~"
+	return ansi.Truncate(s, max, "~")
+}
+
+// padRight pads s with spaces to a display width of w
+func padRight(s string, w int) string {
+	if pad := w - ansi.StringWidth(s); pad > 0 {
+		return s + strings.Repeat(" ", pad)
 	}
-	return s[:max-1] + "~"
+	return s
+}
+
+// fitWidth truncates or pads s to exactly w terminal cells
+func fitWidth(s string, w int) string {
+	return padRight(truncate(s, w), w)
 }
 
 // clipboardResultMsg is sent after a clipboard copy attempt
