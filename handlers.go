@@ -347,9 +347,25 @@ func (m *Model) handlePsqlPrompt() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	cmd.Env = append(os.Environ(), "PGPASSWORD="+password)
+	cmd.Env = os.Environ()
+	if password != "" {
+		// Left unset otherwise so psql falls back to ~/.pgpass
+		cmd.Env = append(cmd.Env, "PGPASSWORD="+password)
+	}
+	// psql understands every libpq sslmode natively, including "prefer"
+	sslmode := config.libpqSSLMode()
 	if config.UsesRDSIAM() {
-		cmd.Env = append(cmd.Env, "PGSSLMODE=require")
+		sslmode, _ = config.driverSSLMode()
+	}
+	cmd.Env = append(cmd.Env, "PGSSLMODE="+sslmode)
+	for _, kv := range []struct{ name, value string }{
+		{"PGSSLROOTCERT", config.SSLRootCert},
+		{"PGSSLCERT", config.SSLCert},
+		{"PGSSLKEY", config.SSLKey},
+	} {
+		if kv.value != "" {
+			cmd.Env = append(cmd.Env, kv.name+"="+kv.value)
+		}
 	}
 
 	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {

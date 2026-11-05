@@ -83,7 +83,8 @@ func (c *rdsIAMConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	connector, err := pq.NewConnector(buildDSN(c.cfg, token))
+	mode, _ := c.cfg.driverSSLMode()
+	connector, err := pq.NewConnector(buildDSN(c.cfg, token, mode))
 	if err != nil {
 		return nil, err
 	}

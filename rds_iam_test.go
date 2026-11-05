@@ -66,7 +66,7 @@ func TestRegionFromHost(t *testing.T) {
 
 func TestBuildDSNQuotesValues(t *testing.T) {
 	cfg := &DBConfig{Host: "h", Port: "5432", Database: "d", User: "u"}
-	dsn := buildDSN(cfg, `p a's\s`)
+	dsn := buildDSN(cfg, `p a's\s`, "require")
 	if !strings.Contains(dsn, `password='p a\'s\\s'`) {
 		t.Errorf("password not quoted correctly: %s", dsn)
 	}

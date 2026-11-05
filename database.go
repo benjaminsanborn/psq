@@ -2,13 +2,14 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 type DBConfig struct {
@@ -17,6 +18,12 @@ type DBConfig struct {
 	Database string
 	User     string
 	Password string
+
+	// TLS settings, passed through to the driver and to psql
+	SSLMode     string
+	SSLRootCert string
+	SSLCert     string
+	SSLKey      string
 
 	// psq-specific settings, read from "#psq:key=value" comment lines inside
 	// a service block so libpq/psql still accept the file.
@@ -86,6 +93,14 @@ func getDBConfig(serviceName string) (*DBConfig, error) {
 					config.User = value
 				case "password":
 					config.Password = value
+				case "sslmode":
+					config.SSLMode = value
+				case "sslrootcert":
+					config.SSLRootCert = value
+				case "sslcert":
+					config.SSLCert = value
+				case "sslkey":
+					config.SSLKey = value
 				}
 			}
 		}
@@ -134,36 +149,100 @@ func connectDB(serviceName string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	var db *sql.DB
 	if config.UsesRDSIAM() {
 		connector, err := newRDSIAMConnector(config)
 		if err != nil {
 			return nil, err
 		}
-		db = sql.OpenDB(connector)
-	} else {
-		db, err = sql.Open("postgres", buildDSN(config, config.Password))
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to database: %w", err)
-		}
+		return pingOrClose(sql.OpenDB(connector))
 	}
 
+	mode, fallback := config.driverSSLMode()
+	db, err := openPostgres(buildDSN(config, config.Password, mode))
+	if err != nil && fallback && errors.Is(err, pq.ErrSSLNotSupported) {
+		// libpq "prefer": the server doesn't do TLS, so connect without it
+		db, err = openPostgres(buildDSN(config, config.Password, "disable"))
+	}
+	return db, err
+}
+
+func openPostgres(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	return pingOrClose(db)
+}
+
+func pingOrClose(db *sql.DB) (*sql.DB, error) {
 	if err := db.Ping(); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
-
 	return db, nil
 }
 
+// libpqSSLMode is the sslmode psql would use: the service file's value, then
+// $PGSSLMODE, then libpq's default of "prefer".
+func (c *DBConfig) libpqSSLMode() string {
+	if c.SSLMode != "" {
+		return c.SSLMode
+	}
+	if env := os.Getenv("PGSSLMODE"); env != "" {
+		return env
+	}
+	return "prefer"
+}
+
+// driverSSLMode maps the libpq sslmode onto what lib/pq supports. lib/pq has
+// no "prefer" or "allow", so "prefer" becomes "require" with fallback set,
+// meaning the caller should retry with "disable" if the server has no TLS.
+// RDS IAM always uses TLS.
+func (c *DBConfig) driverSSLMode() (mode string, fallback bool) {
+	mode = c.libpqSSLMode()
+	switch mode {
+	case "prefer":
+		if c.UsesRDSIAM() {
+			return "require", false
+		}
+		return "require", true
+	case "allow":
+		if c.UsesRDSIAM() {
+			return "require", false
+		}
+		return "disable", false
+	}
+	return mode, false
+}
+
 // buildDSN renders a lib/pq key/value connection string, quoting values so
-// passwords (and IAM tokens) containing special characters survive.
-func buildDSN(config *DBConfig, password string) string {
+// passwords (and IAM tokens) containing special characters survive. An empty
+// password is left out so lib/pq falls back to ~/.pgpass.
+func buildDSN(config *DBConfig, password, sslmode string) string {
 	quote := func(v string) string {
 		v = strings.ReplaceAll(v, `\`, `\\`)
 		return "'" + strings.ReplaceAll(v, "'", `\'`) + "'"
 	}
-	return fmt.Sprintf("host=%s port=%s dbname=%s user=%s password=%s sslmode=require",
-		quote(config.Host), quote(config.Port), quote(config.Database), quote(config.User), quote(password))
+	parts := []string{
+		"host=" + quote(config.Host),
+		"port=" + quote(config.Port),
+		"dbname=" + quote(config.Database),
+		"user=" + quote(config.User),
+	}
+	if password != "" {
+		parts = append(parts, "password="+quote(password))
+	}
+	parts = append(parts, "sslmode="+quote(sslmode))
+	for _, kv := range []struct{ key, value string }{
+		{"sslrootcert", config.SSLRootCert},
+		{"sslcert", config.SSLCert},
+		{"sslkey", config.SSLKey},
+	} {
+		if kv.value != "" {
+			parts = append(parts, kv.key+"="+quote(kv.value))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func executeQuery(db *sql.DB, query string) (string, error) {
