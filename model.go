@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,38 +14,41 @@ import (
 )
 
 type Model struct {
-	queries          []Query
-	allQueries       []Query        // includes hidden queries for search
-	tempQueries      map[string]int // temporary order positions for hidden queries
-	selected         int
-	previousSelected int // track selection before entering modals
-	results          string
-	loading          bool
-	err              string
-	width            int
-	height           int
-	service          string
-	db               *sql.DB // persistent database connection
-	lastQuery        Query
-	viewport         viewport.Model
-	ready            bool
-	lastRefreshAt    time.Time
-	searchMode       bool
-	searchQuery      string
-	filteredQueries  []Query
-	editMode         bool
-	editQuery        Query
-	nameInput        textinput.Model
-	descInput        textinput.Model
-	orderInput       textinput.Model
-	sqlTextarea      textarea.Model
-	editFocus        int    // 0=name, 1=description, 2=order, 3=sql
-	help             help.Model
-	showHelp         bool
-	sparklineData    *SparklineData // Transaction commits sparkline data
-	lastCommits      float64        // Last transaction commit count for rate calculation
-	lastCommitTime   time.Time      // DB timestamp of last commit query for accurate TPS
-	activeView       *ActiveView    // Interactive active connections view (nil when not on Active tab)
+	queries           []Query
+	allQueries        []Query        // includes hidden queries for search
+	tempQueries       map[string]int // temporary order positions for hidden queries
+	selected          int
+	previousSelected  int // track selection before entering modals
+	results           string
+	loading           bool
+	err               string
+	width             int
+	height            int
+	service           string
+	db                *sql.DB // persistent database connection
+	lastQuery         Query
+	viewport          viewport.Model
+	ready             bool
+	lastRefreshAt     time.Time
+	searchMode        bool
+	searchQuery       string
+	filteredQueries   []Query
+	editMode          bool
+	editQuery         Query
+	nameInput         textinput.Model
+	descInput         textinput.Model
+	orderInput        textinput.Model
+	sqlTextarea       textarea.Model
+	editFocus         int    // 0=name, 1=description, 2=order, 3=sql
+	editErr           string // save/delete failure shown in the editor; survives background refreshes
+	help              help.Model
+	showHelp          bool
+	sparklineData     *SparklineData // Transaction commits sparkline data
+	lastCommits       float64        // Last transaction commit count for rate calculation
+	lastCommitTime    time.Time      // DB timestamp of last commit query for accurate TPS
+	activeView        *ActiveView    // Interactive active connections view (nil when not on Active tab)
+	querySeq          int            // incremented per runQuery; results from older dispatches are dropped
+	consecutiveErrors int            // drives auto-refresh backoff while queries keep failing
 }
 
 type Query struct {
@@ -62,13 +66,14 @@ func NewModel(service string) *Model {
 	dbQueries, err := loadQueries()
 	if err != nil {
 		return &Model{
-			queries:     []Query{},
-			allQueries:  []Query{},
-			tempQueries: make(map[string]int),
-			selected:    0,
-			err:         fmt.Sprintf("Failed to load queries: %v", err),
-			service:     service,
-			ready:       false,
+			queries:       []Query{},
+			allQueries:    []Query{},
+			tempQueries:   make(map[string]int),
+			selected:      0,
+			err:           fmt.Sprintf("Failed to load queries: %v", err),
+			service:       service,
+			ready:         false,
+			sparklineData: NewSparklineData(60),
 		}
 	}
 
@@ -145,6 +150,11 @@ func (m *Model) getNextTempOrder() int {
 }
 
 func (m *Model) addTemporaryQuery(query Query) {
+	for _, q := range m.queries {
+		if q.Name == query.Name {
+			return // already a tab
+		}
+	}
 	if query.OrderPosition == nil {
 		// Assign temporary order position
 		tempOrder := m.getNextTempOrder()
@@ -157,6 +167,48 @@ func (m *Model) addTemporaryQuery(query Query) {
 		// Add to visible queries
 		m.queries = append(m.queries, tempQuery)
 	}
+}
+
+// builtinQueries are the hardcoded tabs that precede saved queries
+func builtinQueries() []Query {
+	return []Query{HomeQuery(), ActiveQuery()}
+}
+
+// reloadQueries refreshes the tab and search lists from the query DB, keeping
+// the built-in tabs and any temporary tabs whose queries are still hidden
+func (m *Model) reloadQueries() error {
+	dbQueries, err := loadQueries()
+	if err != nil {
+		return err
+	}
+	queries := append(builtinQueries(), dbQueries...)
+
+	allQueries := queries
+	if all, err := globalQueryDB.LoadAllQueries(); err == nil {
+		allQueries = append(builtinQueries(), all...)
+	}
+
+	var temps []Query
+	for name, pos := range m.tempQueries {
+		found := false
+		for _, q := range allQueries {
+			if q.Name == name && q.OrderPosition == nil {
+				p := pos
+				q.OrderPosition = &p
+				temps = append(temps, q)
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(m.tempQueries, name)
+		}
+	}
+	sort.Slice(temps, func(i, j int) bool { return *temps[i].OrderPosition < *temps[j].OrderPosition })
+
+	m.queries = append(queries, temps...)
+	m.allQueries = allQueries
+	return nil
 }
 
 func (m *Model) isTemporaryQuery(queryName string) bool {

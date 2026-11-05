@@ -40,6 +40,8 @@ func (m *Model) initEditor(query Query) {
 	m.sqlTextarea.SetWidth(80)
 	m.sqlTextarea.SetHeight(10)
 
+	m.editErr = ""
+
 	// Focus on the first input
 	m.editFocus = 0
 	m.nameInput.Focus()
@@ -71,128 +73,123 @@ func (m *Model) handleEditModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleDeleteQuery() (tea.Model, tea.Cmd) {
-	// Delete the query (only for existing queries, not new ones)
-	if m.editQuery.Name != "" {
-		if globalQueryDB != nil {
-			if err := globalQueryDB.DeleteQuery(m.editQuery.Name); err != nil {
-				m.err = fmt.Sprintf("Failed to delete query: %v", err)
-				m.updateContent()
-				return m, nil
-			} else {
-				// Remove from temporary queries if it was temporary
-				if m.isTemporaryQuery(m.editQuery.Name) {
-					delete(m.tempQueries, m.editQuery.Name)
-				}
-
-				// Reload queries
-				queries, err := loadQueries()
-				if err != nil {
-					m.err = fmt.Sprintf("Failed to reload queries: %v", err)
-					m.updateContent()
-					return m, nil
-				} else {
-					m.queries = queries
-					// Also reload all queries for search
-					if allQueries, err := globalQueryDB.LoadAllQueries(); err == nil {
-						m.allQueries = allQueries
-					}
-
-					// Adjust selection if needed
-					if m.previousSelected >= len(m.queries) && len(m.queries) > 0 {
-						m.previousSelected = len(m.queries) - 1
-					}
-
-					m.editMode = false
-					// Restore previous selection
-					if m.previousSelected < len(m.queries) {
-						m.selected = m.previousSelected
-					}
-					m.ensureValidSelection()
-					m.updateContent()
-					return m, nil
-				}
-			}
-		}
+	// Only existing queries can be deleted, not unsaved new ones
+	if m.editQuery.Name == "" || globalQueryDB == nil {
+		m.updateContent()
+		return m, nil
 	}
+	if err := globalQueryDB.DeleteQuery(m.editQuery.Name); err != nil {
+		m.editErr = fmt.Sprintf("Failed to delete query: %v", err)
+		m.updateContent()
+		return m, nil
+	}
+	delete(m.tempQueries, m.editQuery.Name)
+
+	if err := m.reloadQueries(); err != nil {
+		m.editErr = fmt.Sprintf("Failed to reload queries: %v", err)
+		m.updateContent()
+		return m, nil
+	}
+
+	m.editMode = false
+	m.err = ""
+	m.selected = m.previousSelected
+	m.ensureValidSelection()
+	m.syncActiveView()
+	m.loading = true
+	m.lastQuery = m.queries[m.selected]
 	m.updateContent()
-	return m, nil
+	return m, m.runQuery(m.lastQuery)
+}
+
+// validateQueryName rejects names the tab bar can't represent
+func validateQueryName(name string) error {
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if IsHomeTab(name) || IsActiveTab(name) {
+		return fmt.Errorf("%q is reserved for a built-in tab", name)
+	}
+	return nil
 }
 
 func (m *Model) handleSaveQuery() (tea.Model, tea.Cmd) {
-	// Save the query
+	if globalQueryDB == nil {
+		m.updateContent()
+		return m, nil
+	}
+
 	newQuery := Query{
-		Name: func() string {
-			if m.nameInput.Value() == "" {
-				return "New Query"
-			}
-			return m.nameInput.Value()
-		}(),
+		Name:        strings.TrimSpace(m.nameInput.Value()),
 		Description: m.descInput.Value(),
 		SQL:         m.sqlTextarea.Value(),
 	}
+	if err := validateQueryName(newQuery.Name); err != nil {
+		m.editErr = fmt.Sprintf("Cannot save query: %v", err)
+		m.updateContent()
+		return m, nil
+	}
 
-	// Parse order position (but don't save temporary ones)
+	// Parse order position, but don't persist a temporary tab position
 	orderStr := strings.TrimSpace(m.orderInput.Value())
-	isNewQuery := m.editQuery.Name == ""
+	oldName := m.editQuery.Name
+	isNewQuery := oldName == ""
 
 	if orderStr != "" {
 		var pos int
 		if n, err := fmt.Sscanf(orderStr, "%d", &pos); err == nil && n == 1 {
-			// Only set if it's not a temporary position or user changed it
-			if !m.isTemporaryQuery(m.editQuery.Name) || orderStr != fmt.Sprintf("%d", m.tempQueries[m.editQuery.Name]) {
+			if !m.isTemporaryQuery(oldName) || orderStr != fmt.Sprintf("%d", m.tempQueries[oldName]) {
 				newQuery.OrderPosition = &pos
 			}
 		}
 	}
 
-	// Check if we're removing position from an existing query
 	hadPosition := m.editQuery.OrderPosition != nil
 	willHavePosition := newQuery.OrderPosition != nil
 
-	if globalQueryDB != nil {
-		if err := globalQueryDB.SaveQuery(newQuery); err != nil {
-			m.err = fmt.Sprintf("Failed to save query: %v", err)
-			m.updateContent()
-			return m, nil
-		} else {
-			// Reload queries
-			queries, err := loadQueries()
-			if err != nil {
-				m.err = fmt.Sprintf("Failed to reload queries: %v", err)
-				m.updateContent()
-				return m, nil
-			} else {
-				m.queries = queries
-				// Also reload all queries for search
-				if allQueries, err := globalQueryDB.LoadAllQueries(); err == nil {
-					m.allQueries = allQueries
-				}
+	var err error
+	if isNewQuery {
+		err = globalQueryDB.CreateQuery(newQuery)
+	} else {
+		err = globalQueryDB.UpdateQuery(oldName, newQuery)
+	}
+	if err != nil {
+		m.editErr = fmt.Sprintf("Failed to save query: %v", err)
+		m.updateContent()
+		return m, nil
+	}
 
-				// If this is a new query without a position, or if we removed position from existing query, add it as temporary
-				if (isNewQuery && newQuery.OrderPosition == nil) || (!isNewQuery && hadPosition && !willHavePosition) {
-					m.addTemporaryQuery(newQuery)
-				}
+	// A renamed or newly positioned query is no longer the old temporary tab
+	if !isNewQuery && (newQuery.Name != oldName || willHavePosition) {
+		delete(m.tempQueries, oldName)
+	}
 
-				// Find the updated/new query in the list
-				for i, q := range m.queries {
-					if q.Name == newQuery.Name {
-						m.selected = i
-						break
-					}
-				}
-				m.ensureValidSelection()
-			}
-			m.editMode = false
-			m.loading = true
-			m.err = ""
-			m.lastQuery = newQuery
-			m.updateContent()
-			// Execute the updated query
-			return m, m.runQuery(newQuery)
+	if err := m.reloadQueries(); err != nil {
+		m.editErr = fmt.Sprintf("Failed to reload queries: %v", err)
+		m.updateContent()
+		return m, nil
+	}
+
+	// Keep a hidden query visible as a temporary tab after saving it
+	if !willHavePosition && (isNewQuery || hadPosition) {
+		m.addTemporaryQuery(newQuery)
+	}
+
+	for i, q := range m.queries {
+		if q.Name == newQuery.Name {
+			m.selected = i
+			break
 		}
 	}
+	m.ensureValidSelection()
+	m.syncActiveView()
+
+	m.editMode = false
+	m.loading = true
+	m.err = ""
+	m.lastQuery = newQuery
 	m.updateContent()
-	return m, nil
+	return m, m.runQuery(newQuery)
 }
 
 func (m *Model) handleTabNavigation(key string) (tea.Model, tea.Cmd) {

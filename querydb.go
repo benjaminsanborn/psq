@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -361,6 +362,58 @@ func (qdb *QueryDB) SaveQuery(query Query) error {
 
 		return err
 	}
+}
+
+// ErrQueryExists is returned when creating or renaming a query would take a
+// name another saved query already uses
+var ErrQueryExists = errors.New("a query with that name already exists")
+
+func nullableOrder(q Query) interface{} {
+	if q.OrderPosition == nil {
+		return nil
+	}
+	return *q.OrderPosition
+}
+
+// CreateQuery inserts a new query, refusing to overwrite an existing one
+func (qdb *QueryDB) CreateQuery(query Query) error {
+	res, err := qdb.db.Exec(`
+		INSERT INTO queries (name, description, sql, order_position)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(name) DO NOTHING
+	`, query.Name, query.Description, query.SQL, nullableOrder(query))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrQueryExists
+	}
+	return nil
+}
+
+// UpdateQuery replaces the query saved as oldName, which may involve a rename
+func (qdb *QueryDB) UpdateQuery(oldName string, query Query) error {
+	if query.Name != oldName {
+		var exists bool
+		if err := qdb.db.QueryRow("SELECT EXISTS(SELECT 1 FROM queries WHERE name = ?)", query.Name).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return ErrQueryExists
+		}
+	}
+	res, err := qdb.db.Exec(`
+		UPDATE queries
+		SET name = ?, description = ?, sql = ?, order_position = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE name = ?
+	`, query.Name, query.Description, query.SQL, nullableOrder(query), oldName)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("query %q no longer exists", oldName)
+	}
+	return nil
 }
 
 func (qdb *QueryDB) DeleteQuery(name string) error {

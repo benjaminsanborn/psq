@@ -108,6 +108,10 @@ func (m *Model) renderEditMode() string {
 		Foreground(lipgloss.Color("86")).
 		Render(editorTitle) + "\n\n"
 
+	if m.editErr != "" {
+		content += lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.editErr) + "\n\n"
+	}
+
 	// Name input
 	nameStyle := lipgloss.NewStyle()
 	if m.editFocus == 0 {
