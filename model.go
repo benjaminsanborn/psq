@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
@@ -41,14 +42,16 @@ type Model struct {
 	sqlTextarea       textarea.Model
 	editFocus         int    // 0=name, 1=description, 2=order, 3=sql
 	editErr           string // save/delete failure shown in the editor; survives background refreshes
+	confirmDelete     bool   // ctrl+d was pressed once; the next ctrl+d deletes
 	help              help.Model
 	showHelp          bool
-	sparklineData     *SparklineData // Transaction commits sparkline data
-	lastCommits       float64        // Last transaction commit count for rate calculation
-	lastCommitTime    time.Time      // DB timestamp of last commit query for accurate TPS
-	activeView        *ActiveView    // Interactive active connections view (nil when not on Active tab)
-	querySeq          int            // incremented per runQuery; results from older dispatches are dropped
-	consecutiveErrors int            // drives auto-refresh backoff while queries keep failing
+	sparklineData     *SparklineData     // Transaction commits sparkline data
+	lastCommits       float64            // Last transaction commit count for rate calculation
+	lastCommitTime    time.Time          // DB timestamp of last commit query for accurate TPS
+	activeView        *ActiveView        // Interactive active connections view (nil when not on Active tab)
+	querySeq          int                // incremented per runQuery; results from older dispatches are dropped
+	consecutiveErrors int                // drives auto-refresh backoff while queries keep failing
+	cancelInflight    context.CancelFunc // cancels the query dispatched by the latest runQuery
 }
 
 type Query struct {
@@ -217,6 +220,9 @@ func (m *Model) isTemporaryQuery(queryName string) bool {
 }
 
 func (m *Model) Close() {
+	if m.cancelInflight != nil {
+		m.cancelInflight()
+	}
 	if m.db != nil {
 		m.db.Close()
 		m.db = nil

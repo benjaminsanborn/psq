@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os/exec"
@@ -82,7 +83,7 @@ func scrubNewlines(s string) string {
 }
 
 // FetchActiveProcesses queries pg_stat_activity for non-idle, non-self processes
-func FetchActiveProcesses(db *sql.DB) ([]ActiveProcess, error) {
+func FetchActiveProcesses(ctx context.Context, db *sql.DB) ([]ActiveProcess, error) {
 	query := `
 		SELECT
 			pid,
@@ -102,7 +103,7 @@ func FetchActiveProcesses(db *sql.DB) ([]ActiveProcess, error) {
 		  AND state != 'idle'
 		ORDER BY query_start ASC NULLS LAST`
 
-	rows, err := db.Query(query)
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query pg_stat_activity: %w", err)
 	}
@@ -124,9 +125,9 @@ func FetchActiveProcesses(db *sql.DB) ([]ActiveProcess, error) {
 }
 
 // TerminateBackend calls pg_terminate_backend for the given PID
-func TerminateBackend(db *sql.DB, pid int) error {
+func TerminateBackend(ctx context.Context, db *sql.DB, pid int) error {
 	var result bool
-	err := db.QueryRow("SELECT pg_terminate_backend($1)", pid).Scan(&result)
+	err := db.QueryRowContext(ctx, "SELECT pg_terminate_backend($1)", pid).Scan(&result)
 	if err != nil {
 		return fmt.Errorf("pg_terminate_backend failed: %w", err)
 	}
@@ -137,9 +138,9 @@ func TerminateBackend(db *sql.DB, pid int) error {
 }
 
 // CancelBackend calls pg_cancel_backend for the given PID
-func CancelBackend(db *sql.DB, pid int) error {
+func CancelBackend(ctx context.Context, db *sql.DB, pid int) error {
 	var result bool
-	err := db.QueryRow("SELECT pg_cancel_backend($1)", pid).Scan(&result)
+	err := db.QueryRowContext(ctx, "SELECT pg_cancel_backend($1)", pid).Scan(&result)
 	if err != nil {
 		return fmt.Errorf("pg_cancel_backend failed: %w", err)
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -94,6 +95,14 @@ func (m *Model) runQuery(query Query) tea.Cmd {
 	service := m.service
 	chartWidth := GetChartWidth(m.width)
 
+	// Only the latest dispatch is ever shown, so stop the previous one on the
+	// server instead of letting it run to completion
+	if m.cancelInflight != nil {
+		m.cancelInflight()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelInflight = cancel
+
 	return func() tea.Msg {
 		if db == nil {
 			newDB, err := connectDB(service)
@@ -104,7 +113,7 @@ func (m *Model) runQuery(query Query) tea.Cmd {
 		}
 
 		if IsActiveTab(query.Name) {
-			processes, err := FetchActiveProcesses(db)
+			processes, err := FetchActiveProcesses(ctx, db)
 			if err != nil {
 				return queryErrorMsg{seq: seq, err: fmt.Sprintf("Query failed: %v", err)}
 			}
@@ -112,14 +121,14 @@ func (m *Model) runQuery(query Query) tea.Cmd {
 		}
 
 		if IsHomeTab(query.Name) {
-			data, err := fetchHomeData(db, query.SQL, chartWidth)
+			data, err := fetchHomeData(ctx, db, query.SQL, chartWidth)
 			if err != nil {
 				return queryErrorMsg{seq: seq, err: fmt.Sprintf("Query failed: %v", err)}
 			}
 			return homeDataMsg{seq: seq, data: data}
 		}
 
-		result, err := executeQuery(db, query.SQL)
+		result, err := executeQuery(ctx, db, query.SQL)
 		if err != nil {
 			return queryErrorMsg{seq: seq, err: fmt.Sprintf("Query failed: %v", err)}
 		}

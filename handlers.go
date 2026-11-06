@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -225,7 +226,8 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = !m.showHelp
 		m.updateContent()
 		return m, nil
-	case "esc", "ctrl+c":
+	case "q", "ctrl+c":
+		// esc deliberately doesn't quit: it's the "back" key everywhere else
 		m.Close()
 		return m, tea.Quit
 	case "c":
@@ -620,11 +622,13 @@ func (m *Model) executeTerminate(pid int, action string) tea.Cmd {
 		if db == nil {
 			return terminateResultMsg{PID: pid, Action: action, Error: "no database connection"}
 		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 		var err error
 		if action == "cancel" {
-			err = CancelBackend(db, pid)
+			err = CancelBackend(ctx, db, pid)
 		} else {
-			err = TerminateBackend(db, pid)
+			err = TerminateBackend(ctx, db, pid)
 		}
 		if err != nil {
 			return terminateResultMsg{PID: pid, Action: action, Error: err.Error()}

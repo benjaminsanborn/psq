@@ -118,7 +118,7 @@ func (m *PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 			m.updateContent()
 			return m, nil
-		case "esc", "ctrl+c":
+		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
 
 		case "up", "k":

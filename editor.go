@@ -41,6 +41,7 @@ func (m *Model) initEditor(query Query) {
 	m.sqlTextarea.SetHeight(10)
 
 	m.editErr = ""
+	m.confirmDelete = false
 
 	// Focus on the first input
 	m.editFocus = 0
@@ -60,9 +61,26 @@ func (m *Model) handleEditModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Deleting takes two presses of ctrl+d; any other key disarms it
+	if msg.String() == "ctrl+d" {
+		if m.editQuery.Name == "" {
+			return m, nil
+		}
+		if m.confirmDelete {
+			m.confirmDelete = false
+			return m.handleDeleteQuery()
+		}
+		m.confirmDelete = true
+		m.editErr = fmt.Sprintf("Press ctrl+d again to delete %q", m.editQuery.Name)
+		m.updateContent()
+		return m, nil
+	}
+	if m.confirmDelete {
+		m.confirmDelete = false
+		m.editErr = ""
+	}
+
 	switch msg.String() {
-	case "ctrl+d":
-		return m.handleDeleteQuery()
 	case "ctrl+s":
 		return m.handleSaveQuery()
 	case "tab", "shift+tab":

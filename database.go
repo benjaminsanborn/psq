@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -154,7 +155,7 @@ func connectDB(serviceName string) (*sql.DB, error) {
 		if err != nil {
 			return nil, err
 		}
-		return pingOrClose(sql.OpenDB(connector))
+		return pingOrClose(sql.OpenDB(newSessionConnector(connector)))
 	}
 
 	mode, fallback := config.driverSSLMode()
@@ -167,11 +168,11 @@ func connectDB(serviceName string) (*sql.DB, error) {
 }
 
 func openPostgres(dsn string) (*sql.DB, error) {
-	db, err := sql.Open("postgres", dsn)
+	connector, err := pq.NewConnector(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
-	return pingOrClose(db)
+	return pingOrClose(sql.OpenDB(newSessionConnector(connector)))
 }
 
 func pingOrClose(db *sql.DB) (*sql.DB, error) {
@@ -228,6 +229,7 @@ func buildDSN(config *DBConfig, password, sslmode string) string {
 		"port=" + quote(config.Port),
 		"dbname=" + quote(config.Database),
 		"user=" + quote(config.User),
+		"application_name=" + quote(applicationName),
 	}
 	if password != "" {
 		parts = append(parts, "password="+quote(password))
@@ -245,49 +247,27 @@ func buildDSN(config *DBConfig, password, sslmode string) string {
 	return strings.Join(parts, " ")
 }
 
-func executeQuery(db *sql.DB, query string) (string, error) {
-	rows, err := db.Query(query)
+// executeQuery runs a saved query read-only and renders it as a table
+func executeQuery(ctx context.Context, db *sql.DB, query string) (string, error) {
+	columns, rows, truncated, err := queryRows(ctx, db, query, settings.MaxRows)
 	if err != nil {
-		return "", fmt.Errorf("failed to execute query: %w", err)
-	}
-	defer rows.Close()
-
-	columns, err := rows.Columns()
-	if err != nil {
-		return "", fmt.Errorf("failed to get columns: %w", err)
+		return "", err
 	}
 
-	// Collect all data
-	var allRows [][]string
-	values := make([]interface{}, len(columns))
-	valuePtrs := make([]interface{}, len(columns))
-	for i := range values {
-		valuePtrs[i] = &values[i]
-	}
-
-	for rows.Next() {
-		if err := rows.Scan(valuePtrs...); err != nil {
-			return "", fmt.Errorf("failed to scan row: %w", err)
+	cells := make([][]string, len(rows))
+	for i, row := range rows {
+		cells[i] = make([]string, len(row))
+		for j, v := range row {
+			cells[i][j] = scrubNewlines(cellString(v))
 		}
-
-		row := make([]string, len(columns))
-		for i, val := range values {
-			if val == nil {
-				row[i] = "NULL"
-			} else if bytes, ok := val.([]byte); ok {
-				row[i] = scrubNewlines(string(bytes))
-			} else {
-				row[i] = scrubNewlines(fmt.Sprintf("%v", val))
-			}
-		}
-		allRows = append(allRows, row)
 	}
 
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("error iterating rows: %w", err)
+	out := renderTable(columns, cells)
+	if truncated {
+		out += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+			Render(fmt.Sprintf("  showing the first %d rows; add a LIMIT or ORDER BY to see the ones you need", settings.MaxRows)) + "\n"
 	}
-
-	return renderTable(columns, allRows), nil
+	return out, nil
 }
 
 // renderTable renders columns and rows in the same styled plain-text table as the Active tab

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -22,8 +23,8 @@ func HomeQuery() Query {
 }
 
 // RenderHomeChart renders the PostgreSQL activity state chart for the Home tab
-func RenderHomeChart(db *sql.DB, query string, chartWidth int) (string, error) {
-	rows, err := db.Query(query)
+func RenderHomeChart(ctx context.Context, db *sql.DB, query string, chartWidth int) (string, error) {
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return "", fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -164,23 +165,23 @@ type homeData struct {
 }
 
 // fetchHomeData runs the Home dashboard queries. It must not touch the Model.
-func fetchHomeData(db *sql.DB, query string, chartWidth int) (homeData, error) {
-	barChart, err := RenderHomeChart(db, query, chartWidth)
+func fetchHomeData(ctx context.Context, db *sql.DB, query string, chartWidth int) (homeData, error) {
+	barChart, err := RenderHomeChart(ctx, db, query, chartWidth)
 	if err != nil {
 		return homeData{}, err
 	}
 	data := homeData{barChart: barChart}
 
-	if commits, at, err := GetTransactionCommits(db); err == nil {
+	if commits, at, err := GetTransactionCommits(ctx, db); err == nil {
 		data.commits, data.commitsAt, data.commitsOK = commits, at, true
 	} else {
 		// Without commit stats the rest of the dashboard isn't rendered
 		return data, nil
 	}
 
-	data.cacheHitRatio = RenderCacheHitRatio(db)
-	data.replicationLag = RenderReplicationLag(db)
-	data.blockingLocks = RenderBlockingLocks(db)
+	data.cacheHitRatio = RenderCacheHitRatio(ctx, db)
+	data.replicationLag = RenderReplicationLag(ctx, db)
+	data.blockingLocks = RenderBlockingLocks(ctx, db)
 	return data, nil
 }
 
@@ -240,10 +241,10 @@ func (s *SparklineData) AddPoint(value float64, timestamp time.Time) {
 }
 
 // GetTransactionCommits queries the database for transaction commits and the current timestamp
-func GetTransactionCommits(db *sql.DB) (float64, time.Time, error) {
+func GetTransactionCommits(ctx context.Context, db *sql.DB) (float64, time.Time, error) {
 	var commits float64
 	var now time.Time
-	err := db.QueryRow("SELECT SUM(xact_commit), NOW() FROM pg_stat_database").Scan(&commits, &now)
+	err := db.QueryRowContext(ctx, "SELECT SUM(xact_commit), NOW() FROM pg_stat_database").Scan(&commits, &now)
 	if err != nil {
 		return 0, time.Time{}, fmt.Errorf("failed to query transaction commits: %w", err)
 	}
@@ -285,9 +286,9 @@ func RenderSparklineChart(sparklineData *SparklineData, chartWidth int) string {
 }
 
 // GetCacheHitRatio queries the database for cache hit ratio percentage
-func GetCacheHitRatio(db *sql.DB) (float64, bool, error) {
+func GetCacheHitRatio(ctx context.Context, db *sql.DB) (float64, bool, error) {
 	var ratio sql.NullFloat64
-	err := db.QueryRow("SELECT ROUND(SUM(blks_hit) * 100.0 / NULLIF(SUM(blks_hit) + SUM(blks_read), 0), 2) as ratio FROM pg_stat_database").Scan(&ratio)
+	err := db.QueryRowContext(ctx, "SELECT ROUND(SUM(blks_hit) * 100.0 / NULLIF(SUM(blks_hit) + SUM(blks_read), 0), 2) as ratio FROM pg_stat_database").Scan(&ratio)
 	if err != nil {
 		return 0, false, fmt.Errorf("failed to query cache hit ratio: %w", err)
 	}
@@ -310,16 +311,16 @@ type ReplicationLagInfo struct {
 }
 
 // GetReplicationLag queries replication lag — replica replay lag or primary slot lag
-func GetReplicationLag(db *sql.DB) (ReplicationLagInfo, error) {
+func GetReplicationLag(ctx context.Context, db *sql.DB) (ReplicationLagInfo, error) {
 	var isInRecovery bool
-	if err := db.QueryRow("SELECT pg_is_in_recovery()").Scan(&isInRecovery); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT pg_is_in_recovery()").Scan(&isInRecovery); err != nil {
 		return ReplicationLagInfo{}, fmt.Errorf("failed to check recovery state: %w", err)
 	}
 
 	if isInRecovery {
 		// Replica: show replay lag
 		var lagSeconds sql.NullInt64
-		err := db.QueryRow("SELECT EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::int").Scan(&lagSeconds)
+		err := db.QueryRowContext(ctx, "SELECT EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::int").Scan(&lagSeconds)
 		if err != nil || !lagSeconds.Valid {
 			return ReplicationLagInfo{IsReplica: true}, err
 		}
@@ -334,7 +335,7 @@ func GetReplicationLag(db *sql.DB) (ReplicationLagInfo, error) {
 	info := ReplicationLagInfo{IsReplica: false}
 
 	// Count slots by type
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(ctx, `
 		SELECT slot_type, COUNT(*)
 		FROM pg_replication_slots
 		GROUP BY slot_type`)
@@ -364,7 +365,7 @@ func GetReplicationLag(db *sql.DB) (ReplicationLagInfo, error) {
 	var slotName sql.NullString
 	var slotType sql.NullString
 	var lagBytes sql.NullInt64
-	err = db.QueryRow(`
+	err = db.QueryRowContext(ctx, `
 		SELECT slot_name, slot_type,
 			pg_wal_lsn_diff(pg_current_wal_lsn(), COALESCE(confirmed_flush_lsn, restart_lsn))::bigint AS lag_bytes
 		FROM pg_replication_slots
@@ -392,13 +393,13 @@ func GetReplicationLag(db *sql.DB) (ReplicationLagInfo, error) {
 }
 
 // RenderCacheHitRatio renders the cache hit ratio widget
-func RenderCacheHitRatio(db *sql.DB) string {
+func RenderCacheHitRatio(ctx context.Context, db *sql.DB) string {
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("86")).
 		MarginBottom(1)
 
-	ratio, valid, err := GetCacheHitRatio(db)
+	ratio, valid, err := GetCacheHitRatio(ctx, db)
 	if err != nil || !valid {
 		return titleStyle.Render("Cache Hit Ratio") + "\n" +
 			lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("N/A")
@@ -459,7 +460,7 @@ func formatDuration(seconds int) string {
 }
 
 // RenderReplicationLag renders the replication lag widget
-func RenderReplicationLag(db *sql.DB) string {
+func RenderReplicationLag(ctx context.Context, db *sql.DB) string {
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("86")).
@@ -468,7 +469,7 @@ func RenderReplicationLag(db *sql.DB) string {
 	dimStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("8"))
 
-	info, err := GetReplicationLag(db)
+	info, err := GetReplicationLag(ctx, db)
 	if err != nil {
 		return titleStyle.Render("Replication") + "\n" + dimStyle.Render("error")
 	}
@@ -636,7 +637,7 @@ type BlockingLockInfo struct {
 }
 
 // GetBlockingLockInfo queries for the count of blocked queries and max wait time
-func GetBlockingLockInfo(db *sql.DB) (BlockingLockInfo, error) {
+func GetBlockingLockInfo(ctx context.Context, db *sql.DB) (BlockingLockInfo, error) {
 	sqlQuery := `
 		SELECT
 			COUNT(DISTINCT l.pid) AS blocked_count,
@@ -648,7 +649,7 @@ func GetBlockingLockInfo(db *sql.DB) (BlockingLockInfo, error) {
 	var info BlockingLockInfo
 	var blockedCount, longestWait sql.NullInt64
 
-	err := db.QueryRow(sqlQuery).Scan(&blockedCount, &longestWait)
+	err := db.QueryRowContext(ctx, sqlQuery).Scan(&blockedCount, &longestWait)
 	if err != nil {
 		return BlockingLockInfo{}, fmt.Errorf("failed to query blocking locks: %w", err)
 	}
@@ -667,7 +668,7 @@ func GetBlockingLockInfo(db *sql.DB) (BlockingLockInfo, error) {
 }
 
 // RenderBlockingLocks renders the blocking locks widget (full width)
-func RenderBlockingLocks(db *sql.DB) string {
+func RenderBlockingLocks(ctx context.Context, db *sql.DB) string {
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("86"))
@@ -675,7 +676,7 @@ func RenderBlockingLocks(db *sql.DB) string {
 	errorStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("9"))
 
-	info, err := GetBlockingLockInfo(db)
+	info, err := GetBlockingLockInfo(ctx, db)
 	if err != nil {
 		return titleStyle.Render("Blocking Locks") + "\n" +
 			errorStyle.Render(fmt.Sprintf("Error: %v", err))
