@@ -8,10 +8,10 @@
 
 ## Queries & Data
 - [ ] Query history — keep a log of recently executed ad-hoc queries for easy re-run
-- [ ] Export results to CSV/JSON (pipe-friendly for scripting)
+- [x] Export results to CSV/JSON (pipe-friendly for scripting)
 - [ ] Parameterized queries — allow `$1`, `$2` placeholders and prompt for values at runtime
 - [ ] Saved query folders/categories for organizing large query libraries
-- [ ] Default query pack updates — ship new useful queries with releases, offer to merge into user's `queries.db`
+- [x] Default query pack updates — ship new useful queries with releases, offer to merge into user's `queries.db`
 
 ## Home Dashboard
 - [ ] Add more widgets: cache hit ratio, table bloat, replication lag, longest running query
@@ -21,7 +21,7 @@
 ## Connections
 - [ ] Support `DATABASE_URL` / `PGCONNSTRING` in addition to `~/.pg_service.conf`
 - [ ] Connection health indicator (latency ping in the service picker)
-- [ ] SSL mode selector (currently hardcoded `sslmode=require`)
+- [x] SSL mode selector (currently hardcoded `sslmode=require`)
 - [x] Connection pooling / reuse — currently opens a new connection per query execution
 - [ ] Multiple simultaneous connections (compare across envs side-by-side)
 
@@ -32,8 +32,8 @@
 - [ ] Support alternative LLM providers (Anthropic, local Ollama, etc.)
 
 ## Developer / Project
-- [ ] Add tests — at minimum for `querydb.go`, config parsing, and query filtering
+- [x] Add tests — at minimum for `querydb.go`, config parsing, and query filtering
 - [ ] CI: add `go vet` / `staticcheck` / `golangci-lint` to the release workflow
 - [ ] Publish a Homebrew bottle for faster installs
-- [ ] Man page / `--help` improvements with examples
+- [x] Man page / `--help` improvements with examples
 - [ ] Config file (`~/.psq/config.toml`) for preferences (theme, refresh rate, default service, AI model)

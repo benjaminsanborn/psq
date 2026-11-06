@@ -8,26 +8,16 @@ A modern TUI-based PostgreSQL monitoring tool built with Go and [Bubble Tea](htt
 
 ## Features
 
-### 🚀 Core Features
-- **Interactive Service Picker** - Fuzzy search through your database connections
-- **Pre-configured Queries** - Common monitoring queries ready to go (connections, locks, queries, replication, etc.)
-- **Active Connection Viewer** - Real-time view of active queries with terminate/cancel capabilities
-- **Custom Query Editor** - Create and edit your own monitoring queries
-- **Query Search** - Fast search across all saved queries (including hidden ones)
-- **Mouse Support** - Click tabs to navigate, full keyboard shortcuts available
-- **Persistent Queries** - SQLite-backed query storage with import/export
-
-### 🎨 UI Features
-- Clean tabbed interface with status indicators
-- Real-time query results with syntax highlighting
-- Sparkline charts for transaction rate visualization
-- Detailed process view with full query text and stats
-- Smart refresh rate limiting (500ms cooldown)
-
-### 🤖 AI-Powered (Optional)
-- ChatGPT integration for query generation (requires `$OPENAI_API_KEY`)
-- Generate complex queries from natural language descriptions
-- **Use with caution** - always review generated queries before running
+- **Home dashboard**: connection states, transactions/sec, cache hit ratio, replication lag and blocked queries at a glance
+- **Active sessions**: live view of every non-idle session, with terminate/cancel, sort and filter
+- **Lock tree**: see who is blocking whom, with root blockers first and their waiters nested underneath
+- **Statements**: the top `pg_stat_statements` entries over the last 10s, 1m or 5m, instead of totals since the last reset
+- **Saved queries**: a starter pack of monitoring queries, plus your own, stored in SQLite and searchable with fuzzy search
+- **Scriptable**: run any saved query once from the command line and get a table, CSV or JSON
+- **Safe on production**: saved queries run read-only with a statement timeout, and every session is labeled `psq`
+- **Refresh control**: pause, change the interval live, or give each query its own interval
+- **Service picker**: fuzzy-filter the services in `~/.pg_service.conf`
+- **Mouse support**: click tabs, services and the blocked-queries widget
 
 ## Installation
 
@@ -40,136 +30,120 @@ brew install benjaminsanborn/psq/psq
 ### From Source
 
 ```bash
-# Clone the repository
 git clone https://github.com/benjaminsanborn/psq.git
 cd psq
-
-# Build
-go build -o psq
-
-# Optional: Install to $GOPATH/bin
-go install
+go build -o psq     # or: go install
 ```
 
 ## Quick Start
 
-1. **Set up PostgreSQL service file** (`~/.pg_service.conf`):
+1. **Set up a PostgreSQL service file** (`~/.pg_service.conf`):
    ```ini
    [prod]
    host=prod.example.com
    port=5432
    dbname=mydb
    user=monitor
-   password=secret
 
-   [staging]
-   host=staging.example.com
-   port=5432
-   dbname=mydb
-   user=monitor
+   [local]
+   host=localhost
+   dbname=postgres
+   user=postgres
    ```
+   Put passwords in `~/.pgpass` rather than in the service file.
 
 2. **Run psq**:
    ```bash
-   # Interactive service picker
-   psq
-
-   # Connect directly to a service
-   psq prod
+   psq          # pick a service
+   psq prod     # connect directly
    ```
 
-3. **Navigate** with keyboard shortcuts (press `?` for help)
+3. Press `?` for the keyboard shortcuts.
 
 ## Usage
 
 ```bash
-# Show service picker with fuzzy search
-psq
+psq                         # service picker
+psq prod                    # connect to a service (or: psq -s prod)
 
-# Connect to specific service
-psq prod
-psq --service staging
-psq -s dev
+# Non-interactive: run once, print, exit
+psq prod --query Locks                     # saved query as a table
+psq prod -q "lock information" -f csv      # names are case-insensitive
+psq prod -q Active -f json                 # sessions, including blocked_by and blocking_total
+psq prod --sql "SELECT now()" -f json      # ad-hoc SQL (also read-only)
+psq --list-queries                         # what's saved
 
-# Show help
-psq --help
-
-# Show version
-psq --version
+# Options
+psq prod --refresh 5s                      # default auto-refresh interval (default 1s)
+psq prod --statement-timeout 30s           # cancel slow statements (default 10s, 0 disables)
+psq --import-defaults                      # add new starter queries to your library
 ```
+
+Non-interactive output has no colors or truncation. NULL is empty in CSV and `null` in JSON, and `numeric` and `json` columns come out as JSON values rather than strings. The exit status is non-zero on any error.
 
 ## Keyboard Shortcuts
 
-### Navigation
-- **←/→** or **h/l** - Switch between query tabs
-- **↑/↓** or **k/j** - Scroll viewport up/down
-- **PgUp/PgDn** - Page up/down
-- **Home/End** - Jump to top/bottom
-- **Click** - Mouse navigation on query tabs
+### Tabs and refresh
+- **←/→** or **h/l**: switch tabs (or click one)
+- **Enter/Space/r**: refresh now
+- **p**: pause / resume auto-refresh
+- **+ / -**: refresh less / more often (1s to 1m). The header shows the current interval.
 
-### Query Operations
-- **Enter/Space/R** - Execute current query (refresh)
-- **S** - Search queries (fuzzy search, works on hidden queries too)
-- **E** - Edit current query
-- **N** - Create new query
-- **D** - Dump queries to file
-- **X** - Open psql prompt for current database
+### Scrolling
+- **↑/↓** or **k/j**: scroll results
+- **PgUp/PgDn**, **Home/End**: page, jump to top/bottom
 
-### Active Connections View
-When on the "Active" tab:
-- **↑/↓** or **k/j** - Select process
-- **Enter** - View process details
-- **T** - Terminate backend (`pg_terminate_backend`)
-- **C** - Cancel query (`pg_cancel_backend`)
-- **Y** - Copy query to clipboard (in detail view)
-- **Esc** - Back to list / exit detail view
+### Saved queries
+- **s**: fuzzy search all queries, including hidden ones
+- **e**: edit the current query, **n**: new query
+- In the editor: **Tab** switches fields, **Ctrl+S** saves, **Ctrl+D** twice deletes, **Esc** cancels
+- **x**: open `psql` on the current connection
 
-### Edit Mode
-- **Tab** - Switch between fields (name, description, order, SQL)
-- **Ctrl+S** - Save query
-- **Ctrl+D** - Delete query
-- **Ctrl+G** - Generate query with ChatGPT (requires `$OPENAI_API_KEY`)
-- **Esc** - Cancel and return
+### Home
+- **b** (or click the blocked-queries widget): open the lock tree
+
+### Active
+- **↑/↓** or **k/j**: select a session, **Enter**: details
+- **t**: terminate (`pg_terminate_backend`), **c**: cancel query (`pg_cancel_backend`), both with confirmation
+- **b**: lock tree. Shows only blocking chains: root blockers in red, waiting sessions in yellow, nested under what they wait on.
+- **o**: cycle sort: duration, blocking, state, user, database
+- **/**: filter by PID, user, database, state, application, client or query text
+- **y**: copy the query (in details)
+- **Esc**: back out of details, the filter, or the lock tree
+
+The **Locks** column shows `blocks N` for a root blocker (N = sessions held up, directly or not) and `by PID` for a waiting session. For `idle in transaction` sessions, **Time** is how long the session has sat idle, which is usually the number that matters.
+
+### Statements
+- **w**: window: last 10s, 1m or 5m
+- **o**: cycle sort: total time, calls, rows, mean time, disk reads
+
+Statements needs the `pg_stat_statements` extension. psq takes a sample on each refresh and shows the difference over the window. While a window is still filling, the header says how much data it has so far.
 
 ### Other
-- **?** - Toggle help
-- **C** - Return to service picker
-- **Esc/Ctrl+C** - Quit
+- **?**: help
+- **c**: back to the service picker
+- **q** or **Ctrl+C**: quit. **Esc** never quits; it always means "back".
+
+In the service picker: **/** to fuzzy-filter, **e** to edit `~/.pg_service.conf`, **q/Esc** to quit.
+
+## Safety
+
+psq is meant to be left running against production, so:
+
+- **Saved queries and `--sql` run in a `READ ONLY` transaction.** A query that writes fails instead of running every second.
+- **Every statement has a timeout** (`--statement-timeout`, default 10s), set with `SET statement_timeout` on each connection so it works through PgBouncer.
+- **Sessions are labeled `application_name=psq`**, so they're easy to spot and exclude.
+- **Switching tabs cancels the previous tab's query** on the server rather than letting it finish.
+- **The TUI shows at most 1000 rows** of a saved query. Add a `LIMIT` or `ORDER BY` for big results.
+- **Slow-changing queries can refresh less often or only on demand** (see the editor's *Refresh Every* field).
 
 ## Configuration
 
-### Query Database
+### Service file
 
-Queries are stored in `~/.psq/queries.db` (SQLite). The database is auto-created on first run with sensible defaults.
+psq reads `~/.pg_service.conf` ([format](https://www.postgresql.org/docs/current/libpq-pgservice.html)). It understands `host`, `port`, `dbname`, `user`, `password`, `sslmode`, `sslrootcert`, `sslcert` and `sslkey`. A missing password is looked up in `~/.pgpass`.
 
-**Query Structure:**
-```sql
-CREATE TABLE queries (
-    name TEXT PRIMARY KEY,
-    description TEXT,
-    sql TEXT,
-    order_position INTEGER  -- NULL = hidden from tabs
-);
-```
-
-**Importing Queries:**
-I periodically export my query collection. You can download and copy it to `~/.psq/queries.db` to use my defaults.
-
-### Service Configuration
-
-psq uses the standard PostgreSQL service file format (`~/.pg_service.conf`):
-
-```ini
-[service_name]
-host=hostname
-port=5432
-dbname=database_name
-user=username
-password=password  # or use .pgpass for security
-sslmode=require    # optional SSL settings
-```
-
-See [PostgreSQL documentation](https://www.postgresql.org/docs/current/libpq-pgservice.html) for more options.
+`sslmode` follows libpq: when it isn't set (in the file or `$PGSSLMODE`), psq tries TLS and falls back to a plain connection if the server doesn't support TLS. Set `sslmode=require` (or `verify-full`) to insist on TLS.
 
 #### AWS RDS IAM Authentication
 
@@ -188,30 +162,23 @@ user=iam_db_user
 
 psq uses the standard AWS credential chain (env vars, `~/.aws/config` including SSO, instance roles) and creates a new 15-minute token for each new connection, so long sessions stay connected. The `x` psql prompt receives a fresh token too. The database user needs `GRANT rds_iam TO iam_db_user`, and the IAM principal needs `rds-db:connect`.
 
-### AI Features
+### Saved queries
 
-To enable ChatGPT query generation:
+Queries live in `~/.psq/queries.db` (SQLite). A new database starts with psq's starter pack. When a release adds starter queries, `psq --import-defaults` adds the ones you don't have as hidden queries, and never changes the ones you do have.
 
-```bash
-export OPENAI_API_KEY=sk-...
-```
+Each query has:
+- **Order position**: its place in the tab bar. Leave it empty to hide the query; hidden queries are still reachable with `s` and `--query`.
+- **Refresh every**: seconds between refreshes. Leave it empty to use the global interval, or set `0` to refresh only when you press `r`.
 
-**⚠️ Important**: AI-generated queries should always be reviewed before execution. Never blindly run AI-generated queries on production databases.
+The names `Home`, `Active` and `Statements` are reserved for the built-in tabs.
 
-## Built-in Queries
+## Built-in Tabs and Starter Queries
 
-psq comes with several pre-configured monitoring queries:
+Built-in tabs: **Home**, **Active**, **Statements**.
 
-- **Home** - Connection overview with sparkline charts
-- **Active** - Interactive active connections viewer
-- **Connections** - Current database connections by state
-- **Locks** - Lock information and blocking queries
-- **Long Queries** - Queries running longer than 5 minutes
-- **Tables** - Table sizes and statistics
-- **Indexes** - Index usage and sizes
-- **Replication** - Replication lag and status
-- **Cache Hit Ratio** - Buffer cache effectiveness
-- **Vacuum** - Autovacuum status
+Starter queries:
+- Shown as tabs: **Connection States**, **Lock Information**, **Replication Lag**, **Vacuum Progress**
+- Hidden (press `s`): **Autovacuum Stats**, **Configuration Settings**, **Index Creation**, **Table IO Stats**, **Table Replication State**, **Top Queries**
 
 ## Architecture
 
@@ -231,48 +198,24 @@ psq comes with several pre-configured monitoring queries:
 ## Development
 
 ```bash
-# Run tests
-go test ./...
-
-# Run with race detector
-go run -race main.go
-
-# Build with version info
-go build -ldflags "-X main.version=v1.0.0" -o psq
-
-# Format code
+go test -race ./...                              # run tests
+go build -ldflags "-X main.version=v1.0.0" -o psq  # build with version info
 go fmt ./...
 ```
 
 ## Requirements
 
-- Go 1.21+ (for building from source)
-- PostgreSQL database(s) to monitor
+- Go 1.24+ (for building from source)
+- PostgreSQL 10+ to monitor (the Statements tab also needs `pg_stat_statements`)
 - `~/.pg_service.conf` configured
-- Optional: `$OPENAI_API_KEY` for AI features
-
-## Tips & Tricks
-
-1. **Hidden Queries** - Set `order_position` to `NULL` in SQLite to hide queries from tabs. They're still searchable via `S`.
-
-2. **Quick Switching** - Use the service picker (`C` key) to quickly switch between databases without quitting.
-
-3. **Custom Queries** - Create custom queries for your specific monitoring needs. Use `N` to create, `E` to edit.
-
-4. **Refresh Rate** - There's a 500ms cooldown between query executions to prevent hammering the database.
-
-5. **psql Integration** - Press `X` to drop into `psql` with the current connection. Great for ad-hoc queries.
-
-6. **Query Export** - Use `D` to dump your query collection for backup or sharing.
 
 ## Roadmap
 
-- [ ] Query result export (CSV, JSON)
-- [ ] Configurable refresh intervals
-- [ ] Query history and favorites
-- [ ] Dashboard mode (multiple queries visible)
-- [ ] Plugin system for custom visualizations
-- [ ] PostgreSQL explain plan visualization
+- [ ] Parameterized queries (prompt for `$1`, `$2`, ...)
+- [ ] Persist Home and Statements history across restarts
+- [ ] Configurable Home dashboard widgets
+- [ ] Color themes
+- [ ] EXPLAIN plan view
 
 ## Contributing
 
