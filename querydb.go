@@ -69,6 +69,8 @@ func (qdb *QueryDB) initSchema() error {
 
 	// Remove legacy "Active" query now that it's a built-in view
 	_, _ = qdb.db.Exec("DELETE FROM queries WHERE name = 'Active'")
+	// Saved queries can't share a name with a built-in tab; keep them under a new name
+	_, _ = qdb.db.Exec("UPDATE OR IGNORE queries SET name = name || ' (saved)' WHERE name IN ('Home', 'Statements')")
 
 	// Check if order_position column exists (for migration)
 	rows, err := qdb.db.Query("PRAGMA table_info(queries)")

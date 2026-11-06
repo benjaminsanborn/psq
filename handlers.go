@@ -41,6 +41,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleActiveProcesses(msg)
 	case homeDataMsg:
 		return m.handleHomeData(msg)
+	case stmtDataMsg:
+		if msg.seq != m.querySeq {
+			return m, nil
+		}
+		if msg.result.snapshot != nil {
+			m.statements().Add(msg.result.snapshot)
+		}
+		return m.applyResult(msg.result.rendered)
 	case dbConnectedMsg:
 		return m.handleDBConnected(msg)
 	case psqlExitMsg:
@@ -213,6 +221,20 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "up", "k", "down", "j", "pgup", "pgdown", "enter", "t", "c", "b", "o", "/", "esc":
 			return m.handleActiveViewKeys(msg)
+		}
+	}
+
+	if m.selected < len(m.queries) && IsStatementsTab(m.queries[m.selected].Name) {
+		switch msg.String() {
+		case "w", "o":
+			if msg.String() == "w" {
+				m.statements().CycleWindow()
+			} else {
+				m.statements().CycleSort()
+			}
+			m.loading = true
+			m.updateContent()
+			return m, m.runQuery(m.lastQuery)
 		}
 	}
 

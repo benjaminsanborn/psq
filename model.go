@@ -52,6 +52,7 @@ type Model struct {
 	querySeq          int                // incremented per runQuery; results from older dispatches are dropped
 	consecutiveErrors int                // drives auto-refresh backoff while queries keep failing
 	cancelInflight    context.CancelFunc // cancels the query dispatched by the latest runQuery
+	stmtView          *StmtView          // Statements tab state and sample history; kept across tab switches
 }
 
 type Query struct {
@@ -80,18 +81,14 @@ func NewModel(service string) *Model {
 		}
 	}
 
-	// Create hardcoded Home tab as first query, Active tab as second
-	homeQuery := HomeQuery()
-	activeQuery := ActiveQuery()
+	// Built-in tabs come first, then saved queries
+	queries := append(builtinQueries(), dbQueries...)
 
-	// Combine Home + Active tabs with database queries
-	queries := append([]Query{homeQuery, activeQuery}, dbQueries...)
-
-	// Also load all queries (including hidden ones) for search, but include Home and Active
+	// Also load all queries (including hidden ones) for search
 	allQueries := queries
 	if globalQueryDB != nil {
 		if allQueriesFromDB, err := globalQueryDB.LoadAllQueries(); err == nil {
-			allQueries = append([]Query{homeQuery, activeQuery}, allQueriesFromDB...)
+			allQueries = append(builtinQueries(), allQueriesFromDB...)
 		}
 	}
 
@@ -174,7 +171,7 @@ func (m *Model) addTemporaryQuery(query Query) {
 
 // builtinQueries are the hardcoded tabs that precede saved queries
 func builtinQueries() []Query {
-	return []Query{HomeQuery(), ActiveQuery()}
+	return []Query{HomeQuery(), ActiveQuery(), StatementsQuery()}
 }
 
 // reloadQueries refreshes the tab and search lists from the query DB, keeping
@@ -217,6 +214,14 @@ func (m *Model) reloadQueries() error {
 func (m *Model) isTemporaryQuery(queryName string) bool {
 	_, exists := m.tempQueries[queryName]
 	return exists
+}
+
+// statements returns the Statements tab state, creating it on first use
+func (m *Model) statements() *StmtView {
+	if m.stmtView == nil {
+		m.stmtView = NewStmtView()
+	}
+	return m.stmtView
 }
 
 func (m *Model) Close() {

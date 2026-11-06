@@ -249,21 +249,21 @@ func buildDSN(config *DBConfig, password, sslmode string) string {
 
 // executeQuery runs a saved query read-only and renders it as a table
 func executeQuery(ctx context.Context, db *sql.DB, query string) (string, error) {
-	columns, rows, truncated, err := queryRows(ctx, db, query, settings.MaxRows)
+	res, err := queryRows(ctx, db, query, settings.MaxRows)
 	if err != nil {
 		return "", err
 	}
 
-	cells := make([][]string, len(rows))
-	for i, row := range rows {
+	cells := make([][]string, len(res.Rows))
+	for i, row := range res.Rows {
 		cells[i] = make([]string, len(row))
 		for j, v := range row {
 			cells[i][j] = scrubNewlines(cellString(v))
 		}
 	}
 
-	out := renderTable(columns, cells)
-	if truncated {
+	out := renderTable(res.Columns, cells)
+	if res.Truncated {
 		out += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
 			Render(fmt.Sprintf("  showing the first %d rows; add a LIMIT or ORDER BY to see the ones you need", settings.MaxRows)) + "\n"
 	}

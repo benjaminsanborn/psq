@@ -125,7 +125,7 @@ func validateQueryName(name string) error {
 	if name == "" {
 		return fmt.Errorf("name is required")
 	}
-	if IsHomeTab(name) || IsActiveTab(name) {
+	if IsHomeTab(name) || IsActiveTab(name) || IsStatementsTab(name) {
 		return fmt.Errorf("%q is reserved for a built-in tab", name)
 	}
 	return nil

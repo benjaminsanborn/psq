@@ -94,6 +94,18 @@ func (m *Model) runQuery(query Query) tea.Cmd {
 	db := m.db
 	service := m.service
 	chartWidth := GetChartWidth(m.width)
+	var stmtReq stmtRequest
+	if IsStatementsTab(query.Name) {
+		sv := m.statements()
+		stmtReq = stmtRequest{
+			baseline: sv.Baseline(time.Now()),
+			window:   stmtWindows[sv.Window],
+			order:    sv.Sort,
+			texts:    sv.texts,
+			width:    m.width,
+			height:   m.height,
+		}
+	}
 
 	// Only the latest dispatch is ever shown, so stop the previous one on the
 	// server instead of letting it run to completion
@@ -118,6 +130,14 @@ func (m *Model) runQuery(query Query) tea.Cmd {
 				return queryErrorMsg{seq: seq, err: fmt.Sprintf("Query failed: %v", err)}
 			}
 			return activeProcessesMsg{seq: seq, processes: processes}
+		}
+
+		if IsStatementsTab(query.Name) {
+			result, err := fetchStatements(ctx, db, stmtReq)
+			if err != nil {
+				return queryErrorMsg{seq: seq, err: fmt.Sprintf("Query failed: %v", err)}
+			}
+			return stmtDataMsg{seq: seq, result: result}
 		}
 
 		if IsHomeTab(query.Name) {

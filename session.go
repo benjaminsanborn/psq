@@ -71,52 +71,64 @@ func (c *sessionConnector) Driver() driver.Driver {
 	return c.base.Driver()
 }
 
+// resultSet is a fully read query result
+type resultSet struct {
+	Columns   []string
+	Types     []string // database type names, e.g. INT8, NUMERIC, TEXT
+	Rows      [][]any  // []byte values are converted to string
+	Truncated bool     // more rows existed beyond the limit
+}
+
 // queryRows runs a saved (user-written) query inside a READ ONLY transaction,
 // so a query that writes fails instead of modifying data on every refresh.
-// It returns at most maxRows rows (0 means no limit) and reports whether more
-// were available.
-func queryRows(ctx context.Context, db *sql.DB, query string, maxRows int) (columns []string, rows [][]any, truncated bool, err error) {
+// It returns at most maxRows rows (0 means no limit).
+func queryRows(ctx context.Context, db *sql.DB, query string, maxRows int) (*resultSet, error) {
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("failed to start read-only transaction: %w", err)
+		return nil, fmt.Errorf("failed to start read-only transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	r, err := tx.QueryContext(ctx, query)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("failed to execute query: %w", err)
+		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
 	defer r.Close()
 
-	columns, err = r.Columns()
-	if err != nil {
-		return nil, nil, false, fmt.Errorf("failed to get columns: %w", err)
+	res := &resultSet{}
+	if res.Columns, err = r.Columns(); err != nil {
+		return nil, fmt.Errorf("failed to get columns: %w", err)
+	}
+	if types, err := r.ColumnTypes(); err == nil {
+		for _, ct := range types {
+			res.Types = append(res.Types, ct.DatabaseTypeName())
+		}
 	}
 
 	for r.Next() {
-		if maxRows > 0 && len(rows) == maxRows {
-			truncated = true
+		if maxRows > 0 && len(res.Rows) == maxRows {
+			res.Truncated = true
 			break
 		}
-		values := make([]any, len(columns))
-		ptrs := make([]any, len(columns))
+		values := make([]any, len(res.Columns))
+		ptrs := make([]any, len(res.Columns))
 		for i := range values {
 			ptrs[i] = &values[i]
 		}
 		if err := r.Scan(ptrs...); err != nil {
-			return nil, nil, false, fmt.Errorf("failed to scan row: %w", err)
+			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 		for i, v := range values {
 			if b, ok := v.([]byte); ok {
 				values[i] = string(b)
 			}
 		}
-		rows = append(rows, values)
+		res.Rows = append(res.Rows, values)
 	}
 	if err := r.Err(); err != nil {
-		return nil, nil, false, fmt.Errorf("error iterating rows: %w", err)
+		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
-	return columns, rows, truncated, nil
+	return res, nil
 }
 
 // cellString formats a scanned value for display

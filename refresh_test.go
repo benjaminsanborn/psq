@@ -269,7 +269,7 @@ func TestReloadQueriesKeepsBuiltinAndTemporaryTabs(t *testing.T) {
 	for _, q := range m.queries {
 		names = append(names, q.Name)
 	}
-	if got := strings.Join(names, ","); got != "Home,Active,Visible,Hidden" {
+	if got := strings.Join(names, ","); got != "Home,Active,Statements,Visible,Hidden" {
 		t.Errorf("tabs after reload = %s", got)
 	}
 	if _, ok := m.tempQueries["Gone"]; ok {
@@ -277,7 +277,7 @@ func TestReloadQueriesKeepsBuiltinAndTemporaryTabs(t *testing.T) {
 	}
 
 	m.addTemporaryQuery(Query{Name: "Hidden"})
-	if len(m.queries) != 4 {
+	if len(m.queries) != 5 {
 		t.Error("addTemporaryQuery duplicated an existing tab")
 	}
 }
