@@ -1,3 +1,20 @@
+# [1.11.0](https://github.com/benjaminsanborn/psq/compare/v1.10.2...v1.11.0) (2026-11-06)
+
+
+### Bug Fixes
+
+* **statements:** hide psq's own queries from the Statements tab ([6d04d52](https://github.com/benjaminsanborn/psq/commit/6d04d52fca1e9528fb3ac5dd7f82f992613454fb))
+
+
+### Features
+
+* **active:** add lock tree, sorting and filtering to Active ([1c59355](https://github.com/benjaminsanborn/psq/commit/1c5935548c6cd856b2ffcc54905c02d78005e6fd))
+* **cli:** run saved queries or SQL non-interactively ([b3656ba](https://github.com/benjaminsanborn/psq/commit/b3656ba1060a24262a7956094ab8829ddaa54174))
+* fuzzy search, page keys and an embedded starter query pack ([0c11125](https://github.com/benjaminsanborn/psq/commit/0c11125a830856cdf058c8d3c9fa91b067c61e29))
+* **refresh:** add pause, live interval control and per-query refresh ([271fa37](https://github.com/benjaminsanborn/psq/commit/271fa37add169f32a4766db18e53fadb34566f33))
+* **safety:** run saved queries read-only with a statement timeout ([2c259d0](https://github.com/benjaminsanborn/psq/commit/2c259d06a04cfe744d5161c1066f7762ca0905ba))
+* **statements:** add Statements tab with pg_stat_statements deltas ([7bc710b](https://github.com/benjaminsanborn/psq/commit/7bc710bb645eaebde84b5f7533efe78ad3c3fa7a))
+
 ## [1.10.2](https://github.com/benjaminsanborn/psq/compare/v1.10.1...v1.10.2) (2026-11-05)
 
 
