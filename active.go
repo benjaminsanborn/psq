@@ -7,10 +7,12 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/lib/pq"
 )
 
 // ActiveViewMode represents the current mode of the Active view
@@ -24,28 +26,73 @@ const (
 
 // ActiveProcess holds structured data for a single pg_stat_activity row
 type ActiveProcess struct {
-	PID           int
-	Username      string
-	Database      string
-	ClientAddr    string
-	State         string
-	QueryStart    string
-	Duration      string
-	WaitEvent     string
-	WaitEventType string
-	Query         string
-	BackendType   string
+	PID             int
+	Username        string
+	Database        string
+	ClientAddr      string
+	ApplicationName string
+	State           string
+	QueryStart      string
+	DurationSec     float64 // since query_start
+	StateSec        float64 // since state_change, e.g. how long a session has sat idle in transaction
+	XactSec         float64 // since xact_start; negative when there is no open transaction
+	WaitEvent       string
+	WaitEventType   string
+	Query           string
+	BackendType     string
+	BlockedBy       []int // PIDs holding locks this process is waiting for
+
+	// Derived from BlockedBy across the whole result by UpdateSelection
+	Blocking      []int // PIDs waiting directly on this process
+	BlockingTotal int   // sessions held up directly or transitively
+}
+
+// IsBlocked reports whether the process is waiting on another session's lock
+func (p *ActiveProcess) IsBlocked() bool { return len(p.BlockedBy) > 0 }
+
+// IsRootBlocker reports whether the process holds others up without itself
+// being blocked: the session to look at (or terminate) first
+func (p *ActiveProcess) IsRootBlocker() bool { return len(p.Blocking) > 0 && !p.IsBlocked() }
+
+// ActiveSort is a sort order for the Active list
+type ActiveSort int
+
+const (
+	SortDuration ActiveSort = iota
+	SortBlocking
+	SortState
+	SortUser
+	SortDatabase
+	activeSortCount
+)
+
+func (s ActiveSort) String() string {
+	return [...]string{"duration", "blocking", "state", "user", "database"}[s]
+}
+
+// activeRow is one visible line of the Active list
+type activeRow struct {
+	proc  *ActiveProcess
+	depth int // nesting in lock-tree mode
 }
 
 // ActiveView holds the state for the interactive Active tab
 type ActiveView struct {
-	Processes       []ActiveProcess
-	SelectedIndex   int
-	SelectedPID     int // preserved across refreshes
-	Mode            ActiveViewMode
-	TerminateType   string // "terminate" or "cancel"
-	LastError       string
-	ScrollOffset    int
+	Processes     []ActiveProcess // everything fetched, in fetch order
+	Rows          []activeRow     // what the list shows, after sort, filter and tree mode
+	Loaded        bool            // at least one refresh has arrived
+	SelectedIndex int             // index into Rows
+	SelectedPID   int             // preserved across refreshes
+	Mode          ActiveViewMode
+	TerminateType string // "terminate" or "cancel"
+	LastError     string
+	ScrollOffset  int
+
+	Sort      ActiveSort
+	TreeMode  bool   // show only blocking chains, nested under their root blocker
+	Filter    string // case-insensitive match on pid, user, database, state, app, client, query
+	Filtering bool   // the filter prompt has focus
+
 	DetailProcess   *ActiveProcess // snapshot of the process when entering detail/confirm mode
 	DetailCompleted bool           // true when the detail PID is no longer in pg_stat_activity
 	CopyStatus      string         // brief feedback after clipboard copy ("Copied!" or error)
@@ -82,28 +129,44 @@ func scrubNewlines(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// FetchActiveProcesses queries pg_stat_activity for non-idle, non-self processes
-func FetchActiveProcesses(ctx context.Context, db *sql.DB) ([]ActiveProcess, error) {
-	query := `
-		SELECT
-			pid,
-			COALESCE(usename, '') AS usename,
-			COALESCE(datname, '') AS datname,
-			COALESCE(client_addr::text, '') AS client_addr,
-			COALESCE(state, '') AS state,
-			COALESCE(query_start::text, '') AS query_start,
-			COALESCE(LEFT((NOW() - query_start)::text, 15), '') AS duration,
-			COALESCE(wait_event, '') AS wait_event,
-			COALESCE(wait_event_type, '') AS wait_event_type,
-			COALESCE(query, '') AS query,
-			COALESCE(backend_type, '') AS backend_type
+// activeProcessesSQL lists non-idle sessions plus any idle session that is
+// blocking someone (e.g. one holding an advisory lock). pg_blocking_pids takes
+// the lock manager's locks briefly, so it only runs for sessions actually
+// waiting on a lock.
+const activeProcessesSQL = `
+	WITH a AS (
+		SELECT *,
+			CASE WHEN wait_event_type = 'Lock'
+				THEN pg_blocking_pids(pid)
+				ELSE '{}'::int[]
+			END AS blocked_by
 		FROM pg_stat_activity
-		WHERE pid != pg_backend_pid()
-		  AND state IS NOT NULL
-		  AND state != 'idle'
-		ORDER BY query_start ASC NULLS LAST`
+		WHERE pid <> pg_backend_pid()
+	)
+	SELECT
+		pid,
+		COALESCE(usename, ''),
+		COALESCE(datname, ''),
+		COALESCE(client_addr::text, ''),
+		COALESCE(application_name, ''),
+		COALESCE(state, ''),
+		COALESCE(query_start::text, ''),
+		COALESCE(EXTRACT(EPOCH FROM (now() - query_start)), 0)::float8,
+		COALESCE(EXTRACT(EPOCH FROM (now() - state_change)), 0)::float8,
+		COALESCE(EXTRACT(EPOCH FROM (now() - xact_start)), -1)::float8,
+		COALESCE(wait_event, ''),
+		COALESCE(wait_event_type, ''),
+		COALESCE(query, ''),
+		COALESCE(backend_type, ''),
+		blocked_by
+	FROM a
+	WHERE (state IS NOT NULL AND state <> 'idle')
+	   OR pid IN (SELECT unnest(blocked_by) FROM a)
+	ORDER BY query_start ASC NULLS LAST`
 
-	rows, err := db.QueryContext(ctx, query)
+// FetchActiveProcesses queries pg_stat_activity for non-idle and blocking processes
+func FetchActiveProcesses(ctx context.Context, db *sql.DB) ([]ActiveProcess, error) {
+	rows, err := db.QueryContext(ctx, activeProcessesSQL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query pg_stat_activity: %w", err)
 	}
@@ -112,12 +175,17 @@ func FetchActiveProcesses(ctx context.Context, db *sql.DB) ([]ActiveProcess, err
 	var processes []ActiveProcess
 	for rows.Next() {
 		var p ActiveProcess
+		var blockedBy []int64
 		if err := rows.Scan(
-			&p.PID, &p.Username, &p.Database, &p.ClientAddr,
-			&p.State, &p.QueryStart, &p.Duration,
+			&p.PID, &p.Username, &p.Database, &p.ClientAddr, &p.ApplicationName,
+			&p.State, &p.QueryStart, &p.DurationSec, &p.StateSec, &p.XactSec,
 			&p.WaitEvent, &p.WaitEventType, &p.Query, &p.BackendType,
+			pq.Array(&blockedBy),
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+		for _, pid := range blockedBy {
+			p.BlockedBy = append(p.BlockedBy, int(pid))
 		}
 		processes = append(processes, p)
 	}
@@ -150,9 +218,156 @@ func CancelBackend(ctx context.Context, db *sql.DB, pid int) error {
 	return nil
 }
 
-// UpdateSelection preserves selected PID across data refreshes
+// linkBlocking fills Blocking and BlockingTotal from every process's BlockedBy
+func linkBlocking(processes []ActiveProcess) {
+	index := make(map[int]int, len(processes))
+	for i := range processes {
+		processes[i].Blocking = nil
+		processes[i].BlockingTotal = 0
+		index[processes[i].PID] = i
+	}
+	for _, p := range processes {
+		for _, blocker := range p.BlockedBy {
+			if i, ok := index[blocker]; ok {
+				processes[i].Blocking = append(processes[i].Blocking, p.PID)
+			}
+		}
+	}
+	for i := range processes {
+		seen := map[int]bool{processes[i].PID: true}
+		var walk func(pids []int)
+		walk = func(pids []int) {
+			for _, pid := range pids {
+				if seen[pid] {
+					continue // lock cycles exist briefly until the deadlock detector fires
+				}
+				seen[pid] = true
+				processes[i].BlockingTotal++
+				if j, ok := index[pid]; ok {
+					walk(processes[j].Blocking)
+				}
+			}
+		}
+		walk(processes[i].Blocking)
+	}
+}
+
+// BlockingSummary counts root blockers and the sessions they hold up
+func (av *ActiveView) BlockingSummary() (roots, blocked int) {
+	for i := range av.Processes {
+		if av.Processes[i].IsRootBlocker() {
+			roots++
+		}
+		if av.Processes[i].IsBlocked() {
+			blocked++
+		}
+	}
+	return roots, blocked
+}
+
+func (av *ActiveView) matchesFilter(p *ActiveProcess) bool {
+	if av.Filter == "" {
+		return true
+	}
+	needle := strings.ToLower(av.Filter)
+	for _, field := range []string{
+		strconv.Itoa(p.PID), p.Username, p.Database, p.State, p.ApplicationName, p.ClientAddr, p.Query,
+	} {
+		if strings.Contains(strings.ToLower(field), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func (av *ActiveView) less(a, b *ActiveProcess) bool {
+	switch av.Sort {
+	case SortBlocking:
+		if a.BlockingTotal != b.BlockingTotal {
+			return a.BlockingTotal > b.BlockingTotal
+		}
+	case SortState:
+		if a.State != b.State {
+			return a.State < b.State
+		}
+	case SortUser:
+		if a.Username != b.Username {
+			return a.Username < b.Username
+		}
+	case SortDatabase:
+		if a.Database != b.Database {
+			return a.Database < b.Database
+		}
+	}
+	return a.DurationSec > b.DurationSec // longest first, also the tiebreak
+}
+
+// rebuildRows recomputes the visible rows from Processes
+func (av *ActiveView) rebuildRows() {
+	var ordered []*ActiveProcess
+	for i := range av.Processes {
+		ordered = append(ordered, &av.Processes[i])
+	}
+	sort.SliceStable(ordered, func(i, j int) bool { return av.less(ordered[i], ordered[j]) })
+
+	av.Rows = av.Rows[:0]
+	if !av.TreeMode {
+		for _, p := range ordered {
+			if av.matchesFilter(p) {
+				av.Rows = append(av.Rows, activeRow{proc: p})
+			}
+		}
+		return
+	}
+
+	// Lock tree: each root blocker followed by its waiters, depth-first. A
+	// filter keeps a whole chain when any session in it matches.
+	byPID := make(map[int]*ActiveProcess, len(ordered))
+	for _, p := range ordered {
+		byPID[p.PID] = p
+	}
+	for _, root := range ordered {
+		if !root.IsRootBlocker() {
+			continue
+		}
+		var chain []activeRow
+		seen := map[int]bool{}
+		var walk func(p *ActiveProcess, depth int)
+		walk = func(p *ActiveProcess, depth int) {
+			if seen[p.PID] {
+				return
+			}
+			seen[p.PID] = true
+			chain = append(chain, activeRow{proc: p, depth: depth})
+			waiters := make([]*ActiveProcess, 0, len(p.Blocking))
+			for _, pid := range p.Blocking {
+				if w, ok := byPID[pid]; ok {
+					waiters = append(waiters, w)
+				}
+			}
+			sort.SliceStable(waiters, func(i, j int) bool { return av.less(waiters[i], waiters[j]) })
+			for _, w := range waiters {
+				walk(w, depth+1)
+			}
+		}
+		walk(root, 0)
+
+		keep := av.Filter == ""
+		for _, r := range chain {
+			keep = keep || av.matchesFilter(r.proc)
+		}
+		if keep {
+			av.Rows = append(av.Rows, chain...)
+		}
+	}
+}
+
+// UpdateSelection replaces the process list after a refresh, keeping the
+// selected PID selected when it is still visible
 func (av *ActiveView) UpdateSelection(processes []ActiveProcess) {
 	av.Processes = processes
+	av.Loaded = true
+	linkBlocking(av.Processes)
 
 	// If we're in detail/confirm mode, keep DetailProcess live while the PID exists
 	if av.DetailProcess != nil && !av.DetailCompleted {
@@ -170,9 +385,17 @@ func (av *ActiveView) UpdateSelection(processes []ActiveProcess) {
 		}
 	}
 
+	av.refreshRows()
+}
+
+// refreshRows rebuilds Rows and re-finds the selected PID, clamping the index
+// when that PID is no longer visible
+func (av *ActiveView) refreshRows() {
+	av.rebuildRows()
+
 	if av.SelectedPID != 0 {
-		for i, p := range processes {
-			if p.PID == av.SelectedPID {
+		for i, r := range av.Rows {
+			if r.proc.PID == av.SelectedPID {
 				av.SelectedIndex = i
 				av.ensureVisible()
 				return
@@ -180,32 +403,58 @@ func (av *ActiveView) UpdateSelection(processes []ActiveProcess) {
 		}
 	}
 
-	// PID not found; clamp index
-	if av.SelectedIndex >= len(processes) {
-		if len(processes) > 0 {
-			av.SelectedIndex = len(processes) - 1
-		} else {
-			av.SelectedIndex = 0
-		}
+	if av.SelectedIndex >= len(av.Rows) {
+		av.SelectedIndex = len(av.Rows) - 1
 	}
-	if len(processes) > 0 {
-		av.SelectedPID = processes[av.SelectedIndex].PID
+	if av.SelectedIndex < 0 {
+		av.SelectedIndex = 0
+	}
+	if len(av.Rows) > 0 {
+		av.SelectedPID = av.Rows[av.SelectedIndex].proc.PID
 	}
 	av.ensureVisible()
 }
 
 // SelectedProcess returns the currently selected process, or nil
 func (av *ActiveView) SelectedProcess() *ActiveProcess {
-	if len(av.Processes) == 0 || av.SelectedIndex >= len(av.Processes) {
+	if av.SelectedIndex < 0 || av.SelectedIndex >= len(av.Rows) {
 		return nil
 	}
-	return &av.Processes[av.SelectedIndex]
+	return av.Rows[av.SelectedIndex].proc
+}
+
+// MoveSelection moves the cursor by delta rows, staying in bounds
+func (av *ActiveView) MoveSelection(delta int) {
+	if len(av.Rows) == 0 {
+		return
+	}
+	av.SelectedIndex = max(0, min(len(av.Rows)-1, av.SelectedIndex+delta))
+	av.SelectedPID = av.Rows[av.SelectedIndex].proc.PID
+	av.ensureVisible()
+}
+
+// CycleSort switches to the next sort order
+func (av *ActiveView) CycleSort() {
+	av.Sort = (av.Sort + 1) % activeSortCount
+	av.refreshRows()
+}
+
+// SetTreeMode turns the lock-tree view on or off
+func (av *ActiveView) SetTreeMode(on bool) {
+	av.TreeMode = on
+	av.refreshRows()
+}
+
+// SetFilter changes the list filter
+func (av *ActiveView) SetFilter(filter string) {
+	av.Filter = filter
+	av.refreshRows()
 }
 
 // pageSize returns how many rows fit in a page given terminal height
 func (av *ActiveView) pageSize(height int) int {
 	// Reserve lines for header row + footer hints + borders
-	ps := height - 10
+	ps := height - 12
 	if ps < 5 {
 		ps = 5
 	}
@@ -217,228 +466,18 @@ func (av *ActiveView) ensureVisible() {
 	if av.SelectedIndex < av.ScrollOffset {
 		av.ScrollOffset = av.SelectedIndex
 	}
-	// We'll use a default page size; actual clamping happens at render time
+	// The bottom edge depends on terminal height and is clamped at render time
 }
 
-// RenderActiveList renders the process list table with selection highlighting
-func RenderActiveList(av *ActiveView, width, height int) string {
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("86"))
-
-	if len(av.Processes) == 0 {
-		return titleStyle.Render("Active Connections") + "\n\n" +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("No active (non-idle) connections") + "\n\n" +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("esc: quit")
+// formatSeconds renders an elapsed time compactly: 850ms, 42s, 3m 5s, 2h 10m
+func formatSeconds(sec float64) string {
+	if sec < 0 {
+		return ""
 	}
-
-	pageSize := av.pageSize(height)
-
-	// Clamp scroll offset so selected row is visible
-	if av.SelectedIndex < av.ScrollOffset {
-		av.ScrollOffset = av.SelectedIndex
+	if sec < 1 {
+		return fmt.Sprintf("%dms", int(sec*1000))
 	}
-	if av.SelectedIndex >= av.ScrollOffset+pageSize {
-		av.ScrollOffset = av.SelectedIndex - pageSize + 1
-	}
-	if av.ScrollOffset < 0 {
-		av.ScrollOffset = 0
-	}
-
-	// Column widths
-	pidW := 8
-	userW := 12
-	stateW := 12
-	durationW := 12
-	waitW := 16
-
-	// Query column gets the remaining width
-	fixedW := pidW + userW + stateW + durationW + waitW + 7 // 7 for separators
-	queryW := width - fixedW - 4
-	if queryW < 20 {
-		queryW = 20
-	}
-
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color("#7C3AED"))
-
-	selectedStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("86")).
-		Background(lipgloss.Color("235"))
-
-	rowStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252"))
-
-	dimStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240"))
-
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Active Connections (%d)", len(av.Processes))))
-	b.WriteString("\n\n")
-
-	// Header
-	header := fmt.Sprintf("%-*s %-*s %-*s %-*s %-*s %-*s",
-		pidW, "PID", userW, "User",
-		stateW, "State", durationW, "Duration", waitW, "Wait Event",
-		queryW, "Query")
-	b.WriteString(headerStyle.Render(truncate(header, width-2)))
-	b.WriteString("\n")
-
-	// Rows
-	end := av.ScrollOffset + pageSize
-	if end > len(av.Processes) {
-		end = len(av.Processes)
-	}
-
-	for i := av.ScrollOffset; i < end; i++ {
-		p := av.Processes[i]
-		line := strings.Join([]string{
-			padRight(fmt.Sprintf("%d", p.PID), pidW),
-			fitWidth(p.Username, userW),
-			fitWidth(p.State, stateW),
-			fitWidth(p.Duration, durationW),
-			fitWidth(p.WaitEvent, waitW),
-			fitWidth(scrubNewlines(p.Query), queryW),
-		}, " ")
-
-		if i == av.SelectedIndex {
-			b.WriteString(selectedStyle.Render(truncate(line, width-2)))
-		} else {
-			b.WriteString(rowStyle.Render(truncate(line, width-2)))
-		}
-		b.WriteString("\n")
-	}
-
-	// Scroll indicator
-	if len(av.Processes) > pageSize {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("\n  showing %d-%d of %d", av.ScrollOffset+1, end, len(av.Processes))))
-		b.WriteString("\n")
-	}
-
-	// Footer hints
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  up/down: select  enter: details  t: terminate  c: cancel query  esc: quit"))
-
-	if av.LastError != "" {
-		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-		b.WriteString("\n")
-		b.WriteString(errStyle.Render("  Error: " + av.LastError))
-	}
-
-	return b.String()
-}
-
-// RenderActiveDetail renders full details for the selected process
-func RenderActiveDetail(av *ActiveView, width int) string {
-	proc := av.DetailProcess
-	if proc == nil {
-		return "No process selected"
-	}
-
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("86"))
-
-	labelStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("244")).
-		Width(18)
-
-	valueStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252"))
-
-	dimStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240"))
-
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Process Detail - PID %d", proc.PID)))
-
-	if av.DetailCompleted {
-		completedStyle := lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("8"))
-		b.WriteString("  " + completedStyle.Render("(process completed)"))
-	}
-
-	b.WriteString("\n\n")
-
-	fields := []struct{ label, value string }{
-		{"PID", fmt.Sprintf("%d", proc.PID)},
-		{"Username", proc.Username},
-		{"Database", proc.Database},
-		{"Client Address", proc.ClientAddr},
-		{"State", proc.State},
-		{"Backend Type", proc.BackendType},
-		{"Query Start", proc.QueryStart},
-		{"Duration", proc.Duration},
-		{"Wait Event", proc.WaitEvent},
-		{"Wait Event Type", proc.WaitEventType},
-	}
-
-	for _, f := range fields {
-		b.WriteString(labelStyle.Render(f.label+":") + " " + valueStyle.Render(f.value) + "\n")
-	}
-
-	b.WriteString("\n")
-	b.WriteString(labelStyle.Render("Query:"))
-	b.WriteString("\n")
-
-	queryStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("251")).
-		Width(width - 4)
-
-	b.WriteString(queryStyle.Render(scrubNewlines(proc.Query)))
-	b.WriteString("\n\n")
-
-	if av.DetailCompleted {
-		b.WriteString(dimStyle.Render("  y: copy query  esc: back to list"))
-	} else {
-		b.WriteString(dimStyle.Render("  y: copy query  t: terminate  c: cancel query  esc: back to list"))
-	}
-
-	if av.CopyStatus != "" {
-		copyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-		b.WriteString("  " + copyStyle.Render(av.CopyStatus))
-	}
-
-	if av.LastError != "" {
-		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-		b.WriteString("\n")
-		b.WriteString(errStyle.Render("  Error: " + av.LastError))
-	}
-
-	return b.String()
-}
-
-// RenderTerminateConfirm renders the confirmation prompt
-func RenderTerminateConfirm(av *ActiveView) string {
-	proc := av.DetailProcess
-	if proc == nil {
-		return "No process selected"
-	}
-
-	warnStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("9"))
-
-	dimStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240"))
-
-	action := "Terminate"
-	if av.TerminateType == "cancel" {
-		action = "Cancel query on"
-	}
-
-	var b strings.Builder
-	b.WriteString(warnStyle.Render(fmt.Sprintf("%s PID %d? (y/n)", action, proc.PID)))
-	b.WriteString("\n\n")
-	b.WriteString(dimStyle.Render(fmt.Sprintf("  User: %s  Database: %s", proc.Username, proc.Database)))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(fmt.Sprintf("  Query: %s", truncate(scrubNewlines(proc.Query), 60))))
-	return b.String()
+	return formatDuration(int(sec))
 }
 
 // truncate shortens s to at most max terminal cells, marking the cut with

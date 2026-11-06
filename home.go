@@ -11,6 +11,7 @@ import (
 	"github.com/NimbleMarkets/ntcharts/barchart"
 	"github.com/NimbleMarkets/ntcharts/sparkline"
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 )
 
 // HomeQuery returns the hardcoded Home query
@@ -712,6 +713,10 @@ func RenderBlockingLocks(ctx context.Context, db *sql.DB) string {
 	waitStr := formatDuration(info.LongestWaitSec)
 	header := fmt.Sprintf("⚠ %d blocked queries  •  Max wait: %s", info.BlockedCount, waitStyle.Render(waitStr))
 
-	return titleStyle.Render("Blocked Queries") + "\n" +
-		headerStyle.Render(header)
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("   press b (or click) for the lock tree")
+	return zone.Mark(homeBlockingZone, titleStyle.Render("Blocked Queries")+"\n"+
+		headerStyle.Render(header)+hint)
 }
+
+// homeBlockingZone is the clickable area of the Home blocked-queries widget
+const homeBlockingZone = "home_blocking"

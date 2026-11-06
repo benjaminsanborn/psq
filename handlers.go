@@ -82,6 +82,10 @@ func (m *Model) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.selected < len(m.queries) && IsHomeTab(m.queries[m.selected].Name) && zone.Get(homeBlockingZone).InBounds(msg) {
+		return m.openLockTree()
+	}
+
 	// Check if any query zone was clicked
 	for i := range m.queries {
 		zoneID := fmt.Sprintf("query_%d", i)
@@ -201,15 +205,20 @@ func (m *Model) handleSearchModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Delegate to active view when on the Active tab
 	if m.activeView != nil && m.selected < len(m.queries) && IsActiveTab(m.queries[m.selected].Name) {
-		// In detail or confirm mode, fully delegate all keys
-		if m.activeView.Mode != ActiveModeList {
+		// In detail or confirm mode, or while typing a filter, fully delegate all keys
+		if m.activeView.Mode != ActiveModeList || m.activeView.Filtering {
 			return m.handleActiveViewKeys(msg)
 		}
 		// In list mode, delegate navigation/action keys but let tab-switch keys fall through
 		switch msg.String() {
-		case "up", "k", "down", "j", "enter", "t", "c":
+		case "up", "k", "down", "j", "pgup", "pgdown", "enter", "t", "c", "b", "o", "/", "esc":
 			return m.handleActiveViewKeys(msg)
 		}
+	}
+
+	// The Home tab's blocked-queries widget leads to the lock tree
+	if msg.String() == "b" && m.selected < len(m.queries) && IsHomeTab(m.queries[m.selected].Name) {
+		return m.openLockTree()
 	}
 
 	switch msg.String() {
@@ -445,12 +454,29 @@ func (m *Model) handleActiveProcesses(msg activeProcessesMsg) (tea.Model, tea.Cm
 	if m.activeView != nil {
 		m.activeView.UpdateSelection(msg.processes)
 	}
-	// Fallback for the empty state; updateContent renders from activeView when it has processes
-	results := ""
-	if m.activeView != nil && len(m.activeView.Processes) == 0 {
-		results = RenderActiveList(m.activeView, m.width, m.height)
+	// updateContent renders the Active tab straight from activeView
+	return m.applyResult("")
+}
+
+// openLockTree switches to the Active tab showing only blocking chains
+func (m *Model) openLockTree() (tea.Model, tea.Cmd) {
+	for i, q := range m.queries {
+		if IsActiveTab(q.Name) {
+			m.selected = i
+			break
+		}
 	}
-	return m.applyResult(results)
+	m.syncActiveView()
+	if m.activeView == nil {
+		return m, nil
+	}
+	m.activeView.SetTreeMode(true)
+	m.loading = true
+	m.err = ""
+	m.results = ""
+	m.lastQuery = m.queries[m.selected]
+	m.updateContent()
+	return m, m.runQuery(m.lastQuery)
 }
 
 // handleHomeData folds Home dashboard data into model state on the main goroutine
@@ -516,26 +542,47 @@ func (m *Model) handleActiveViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if av.Filtering {
+		switch {
+		case msg.Type == tea.KeyEscape:
+			av.Filtering = false
+			av.SetFilter("")
+		case msg.Type == tea.KeyEnter:
+			av.Filtering = false
+		case msg.Type == tea.KeyBackspace:
+			if r := []rune(av.Filter); len(r) > 0 {
+				av.SetFilter(string(r[:len(r)-1]))
+			}
+		case msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace:
+			av.SetFilter(av.Filter + string(msg.Runes))
+		}
+		m.updateContent()
+		return m, nil
+	}
+
 	switch av.Mode {
 	case ActiveModeList:
 		switch msg.String() {
 		case "up", "k":
-			if av.SelectedIndex > 0 {
-				av.SelectedIndex--
-				if len(av.Processes) > 0 {
-					av.SelectedPID = av.Processes[av.SelectedIndex].PID
-				}
-				av.ensureVisible()
-				m.updateContent()
-			}
+			av.MoveSelection(-1)
 		case "down", "j":
-			if av.SelectedIndex < len(av.Processes)-1 {
-				av.SelectedIndex++
-				if len(av.Processes) > 0 {
-					av.SelectedPID = av.Processes[av.SelectedIndex].PID
-				}
-				av.ensureVisible()
-				m.updateContent()
+			av.MoveSelection(1)
+		case "pgup":
+			av.MoveSelection(-av.pageSize(m.height))
+		case "pgdown":
+			av.MoveSelection(av.pageSize(m.height))
+		case "b":
+			av.SetTreeMode(!av.TreeMode)
+		case "o":
+			av.CycleSort()
+		case "/":
+			av.Filtering = true
+		case "esc":
+			// Back out of a filter first, then out of the lock tree
+			if av.Filter != "" {
+				av.SetFilter("")
+			} else if av.TreeMode {
+				av.SetTreeMode(false)
 			}
 		case "enter":
 			if p := av.SelectedProcess(); p != nil {
@@ -544,27 +591,17 @@ func (m *Model) handleActiveViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				av.Mode = ActiveModeDetail
 				av.LastError = ""
 				av.CopyStatus = ""
-				m.updateContent()
 			}
-		case "t":
+		case "t", "c":
 			if p := av.SelectedProcess(); p != nil {
 				snap := *p
 				av.DetailProcess = &snap
-				av.TerminateType = "terminate"
+				av.TerminateType = map[string]string{"t": "terminate", "c": "cancel"}[msg.String()]
 				av.Mode = ActiveModeConfirmTerminate
 				av.LastError = ""
-				m.updateContent()
-			}
-		case "c":
-			if p := av.SelectedProcess(); p != nil {
-				snap := *p
-				av.DetailProcess = &snap
-				av.TerminateType = "cancel"
-				av.Mode = ActiveModeConfirmTerminate
-				av.LastError = ""
-				m.updateContent()
 			}
 		}
+		m.updateContent()
 
 	case ActiveModeDetail:
 		switch msg.String() {

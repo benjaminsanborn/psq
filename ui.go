@@ -55,7 +55,7 @@ func (m *Model) updateContent() {
 	// Results section
 	if m.err != "" {
 		content += "Error: " + m.err
-	} else if m.activeView != nil && len(m.activeView.Processes) > 0 &&
+	} else if m.activeView != nil && m.activeView.Loaded &&
 		m.selected < len(m.queries) && IsActiveTab(m.queries[m.selected].Name) {
 		// Re-render active view from cached data so key presses take effect immediately
 		switch m.activeView.Mode {
