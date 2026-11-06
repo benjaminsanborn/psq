@@ -330,6 +330,10 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.ScrollUp(1)
 	case "down", "j":
 		m.viewport.ScrollDown(1)
+	case "pgup":
+		m.viewport.PageUp()
+	case "pgdown":
+		m.viewport.PageDown()
 	case "home":
 		m.viewport.GotoTop()
 	case "end":

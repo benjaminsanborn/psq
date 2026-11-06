@@ -19,7 +19,10 @@ type ServicePicker struct {
 
 type PickerModel struct {
 	services        []string
-	selected        int
+	visible         []string // services matching the filter, best match first
+	selected        int      // index into visible
+	filter          string
+	filtering       bool // the filter prompt has focus
 	width           int
 	height          int
 	viewport        viewport.Model
@@ -30,28 +33,20 @@ type PickerModel struct {
 	showHelp        bool
 }
 
+// pickerReloadMsg carries the service list re-read after editing the config
+type pickerReloadMsg struct {
+	services []string
+	err      error
+}
+
 func NewServicePicker() *ServicePicker {
+	m := &PickerModel{help: help.New()}
 	services, err := listServices()
 	if err != nil {
-		return &ServicePicker{
-			model: &PickerModel{
-				services: []string{},
-				selected: 0,
-				err:      fmt.Sprintf("Failed to load services: %v", err),
-				ready:    false,
-			},
-		}
+		m.err = fmt.Sprintf("Failed to load services: %v", err)
 	}
-
-	return &ServicePicker{
-		model: &PickerModel{
-			services: services,
-			selected: 0,
-			ready:    false,
-			help:     help.New(),
-			showHelp: false,
-		},
-	}
+	m.setServices(services)
+	return &ServicePicker{model: m}
 }
 
 func (sp *ServicePicker) Run() (string, error) {
@@ -66,111 +61,106 @@ func (m *PickerModel) Init() tea.Cmd {
 	return nil
 }
 
-func (m *PickerModel) ensureValidSelection() {
-	if len(m.services) == 0 {
-		m.selected = 0
+func (m *PickerModel) setServices(services []string) {
+	m.services = services
+	m.applyFilter()
+}
+
+// applyFilter recomputes the visible services, keeping the selection on the
+// same service when it still matches
+func (m *PickerModel) applyFilter() {
+	current := ""
+	if m.selected < len(m.visible) {
+		current = m.visible[m.selected]
+	}
+
+	m.visible = m.visible[:0]
+	for _, i := range fuzzyRank(m.filter, len(m.services), func(i int) string { return m.services[i] }) {
+		m.visible = append(m.visible, m.services[i])
+	}
+
+	m.selected = 0
+	if m.filter == "" {
+		for i, s := range m.visible {
+			if s == current {
+				m.selected = i
+			}
+		}
+	}
+}
+
+func (m *PickerModel) moveSelection(delta int) {
+	if len(m.visible) == 0 {
 		return
 	}
-	if m.selected >= len(m.services) {
-		m.selected = len(m.services) - 1
+	m.selected = max(0, min(len(m.visible)-1, m.selected+delta))
+}
+
+func (m *PickerModel) choose() (tea.Model, tea.Cmd) {
+	if m.selected < len(m.visible) {
+		m.selectedService = m.visible[m.selected]
+		return m, tea.Quit
 	}
-	if m.selected < 0 {
-		m.selected = 0
-	}
+	return m, nil
 }
 
 func (m *PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
-		// Handle mouse events only when ready
-		if !m.ready {
+		if !m.ready || msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
 			return m, nil
 		}
-
-		// Only handle left mouse button release (clicks)
-		if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
-			return m, nil
-		}
-
-		// Check if any service zone was clicked
-		for i := range m.services {
-			zoneID := fmt.Sprintf("service_%d", i)
-			if zone.Get(zoneID).InBounds(msg) {
-				// Service was clicked, select it and quit
-				if i < len(m.services) {
-					m.selected = i
-					m.ensureValidSelection()
-					m.selectedService = m.services[m.selected]
-					return m, tea.Quit
-				}
+		for i := range m.visible {
+			if zone.Get(fmt.Sprintf("service_%d", i)).InBounds(msg) {
+				m.selected = i
+				return m.choose()
 			}
 		}
+		return m, nil
 
+	case pickerReloadMsg:
+		if msg.err != nil {
+			m.err = msg.err.Error()
+		} else {
+			m.err = ""
+			m.setServices(msg.services)
+		}
+		m.updateContent()
 		return m, nil
 
 	case tea.KeyMsg:
 		if !m.ready {
 			return m, nil
 		}
+		if m.filtering {
+			return m.handleFilterKey(msg)
+		}
 
 		switch msg.String() {
 		case "?":
 			m.showHelp = !m.showHelp
-			m.updateContent()
-			return m, nil
-		case "q", "esc", "ctrl+c":
+		case "q", "ctrl+c":
 			return m, tea.Quit
-
-		case "up", "k":
-			if m.selected > 0 {
-				m.selected--
-				m.ensureValidSelection()
-				m.updateContent()
-			}
-		case "down", "j":
-			if m.selected < len(m.services)-1 {
-				m.selected++
-				m.ensureValidSelection()
-				m.updateContent()
-			}
-
-		case "enter", " ":
-			if len(m.services) > 0 {
-				m.ensureValidSelection()
-				// Return selected service
-				m.selectedService = m.services[m.selected]
+		case "esc":
+			if m.filter != "" {
+				m.filter = ""
+				m.applyFilter()
+			} else {
 				return m, tea.Quit
 			}
-
+		case "/":
+			m.filtering = true
+		case "up", "k":
+			m.moveSelection(-1)
+		case "down", "j":
+			m.moveSelection(1)
+		case "enter", " ":
+			return m.choose()
 		case "e":
-			// Edit pg_service.conf
-			configPath := os.ExpandEnv("$HOME/.pg_service.conf")
-			editor := os.Getenv("EDITOR")
-			if editor == "" {
-				editor = "vi"
-			}
-			cmd := exec.Command(editor, configPath)
-			cmd.Stdin = os.Stdin
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-
-			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-				if err != nil {
-					return fmt.Sprintf("Failed to edit config: %v", err)
-				}
-				// Reload services
-				services, err := listServices()
-				if err != nil {
-					return fmt.Sprintf("Failed to reload services: %v", err)
-				}
-				m.services = services
-				if m.selected >= len(services) && len(services) > 0 {
-					m.selected = len(services) - 1
-				}
-				m.updateContent()
-				return nil
-			})
+			return m, m.editConfig()
 		}
+		m.updateContent()
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -182,7 +172,6 @@ func (m *PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				BorderStyle(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("62"))
 			m.ready = true
-			m.updateContent()
 		} else {
 			m.viewport.Width = msg.Width
 			m.viewport.Height = msg.Height
@@ -192,6 +181,55 @@ func (m *PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// handleFilterKey edits the filter while the prompt has focus. Arrow keys
+// still move the selection so a match can be picked without leaving it.
+func (m *PickerModel) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEscape:
+		m.filtering = false
+		m.filter = ""
+		m.applyFilter()
+	case tea.KeyEnter:
+		return m.choose()
+	case tea.KeyUp:
+		m.moveSelection(-1)
+	case tea.KeyDown:
+		m.moveSelection(1)
+	case tea.KeyBackspace:
+		if r := []rune(m.filter); len(r) > 0 {
+			m.filter = string(r[:len(r)-1])
+			m.applyFilter()
+		}
+	case tea.KeyRunes, tea.KeySpace:
+		m.filter += string(msg.Runes)
+		m.applyFilter()
+	}
+	m.updateContent()
+	return m, nil
+}
+
+// editConfig opens ~/.pg_service.conf in $EDITOR, then re-reads it. The
+// callback only builds a message; Update applies it.
+func (m *PickerModel) editConfig() tea.Cmd {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+	cmd := exec.Command(editor, os.ExpandEnv("$HOME/.pg_service.conf"))
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		if err != nil {
+			return pickerReloadMsg{err: fmt.Errorf("failed to edit config: %w", err)}
+		}
+		services, err := listServices()
+		if err != nil {
+			return pickerReloadMsg{err: fmt.Errorf("failed to reload services: %w", err)}
+		}
+		return pickerReloadMsg{services: services}
+	})
 }
 
 func (m *PickerModel) updateContent() {
@@ -213,14 +251,24 @@ func (m *PickerModel) updateContent() {
 		return
 	}
 
-	content += "Select a database service to monitor:\n"
+	switch {
+	case m.filtering:
+		content += "Filter: " + m.filter + "█\n"
+	case m.filter != "":
+		content += fmt.Sprintf("Filter: %s  (esc to clear)\n", m.filter)
+	default:
+		content += "Select a database service to monitor (/ to filter):\n"
+	}
 
-	if m.err != "" {
+	switch {
+	case m.err != "":
 		content += "Error: " + m.err
-	} else if len(m.services) == 0 {
+	case len(m.services) == 0:
 		content += "No services found in ~/.pg_service.conf\nPress 'e' to edit the configuration file."
-	} else {
-		for i, service := range m.services {
+	case len(m.visible) == 0:
+		content += lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("No services match the filter")
+	default:
+		for i, service := range m.visible {
 			var serviceText string
 			if i == m.selected {
 				// Selected service: bold, colored, with background
@@ -261,23 +309,27 @@ func (m *PickerModel) customHelpView() string {
 	descStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("244"))
 
+	line := func(key, desc string) {
+		helpText.WriteString(keyStyle.Render(key) + " " + descStyle.Render(desc) + "\n")
+	}
+
 	helpText.WriteString(titleStyle.Render("Service Picker Help") + "\n\n")
 
-	// Navigation
 	helpText.WriteString(titleStyle.Render("Navigation:") + "\n")
-	helpText.WriteString(keyStyle.Render("↑/k") + " " + descStyle.Render("move up") + "\n")
-	helpText.WriteString(keyStyle.Render("↓/j") + " " + descStyle.Render("move down") + "\n")
-	helpText.WriteString(keyStyle.Render("click") + " " + descStyle.Render("select service") + "\n")
-	helpText.WriteString(keyStyle.Render("enter/space") + " " + descStyle.Render("select service") + "\n\n")
+	line("↑/k", "move up")
+	line("↓/j", "move down")
+	line("/", "fuzzy filter services (esc clears)")
+	line("click", "select service")
+	line("enter/space", "select service")
+	helpText.WriteString("\n")
 
-	// Configuration
 	helpText.WriteString(titleStyle.Render("Configuration:") + "\n")
-	helpText.WriteString(keyStyle.Render("e") + " " + descStyle.Render("edit ~/.pg_service.conf") + "\n\n")
+	line("e", "edit ~/.pg_service.conf")
+	helpText.WriteString("\n")
 
-	// System
 	helpText.WriteString(titleStyle.Render("System:") + "\n")
-	helpText.WriteString(keyStyle.Render("?") + " " + descStyle.Render("toggle help") + "\n")
-	helpText.WriteString(keyStyle.Render("esc") + " " + descStyle.Render("quit") + "\n")
+	line("?", "toggle help")
+	line("q/esc", "quit")
 
 	return helpText.String()
 }

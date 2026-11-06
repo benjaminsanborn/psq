@@ -213,48 +213,61 @@ func (m *Model) customHelpView() string {
 	descStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("244"))
 
+	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86"))
+	section := func(title string, lines ...[2]string) {
+		helpText.WriteString(sectionStyle.Render(title) + "\n")
+		for _, l := range lines {
+			helpText.WriteString(keyStyle.Render(l[0]) + " " + descStyle.Render(l[1]) + "\n")
+		}
+		helpText.WriteString("\n")
+	}
+
 	helpText.WriteString(titleStyle.Render("Help") + "\n\n")
 
-	// Query Navigation
-	helpText.WriteString(titleStyle.Render("Query Navigation:") + "\n")
-	helpText.WriteString(keyStyle.Render("←/h") + " " + descStyle.Render("previous query") + "\n")
-	helpText.WriteString(keyStyle.Render("→/l") + " " + descStyle.Render("next query") + "\n")
-	helpText.WriteString(keyStyle.Render("click") + " " + descStyle.Render("select query") + "\n")
-	helpText.WriteString(keyStyle.Render("enter/space/r") + " " + descStyle.Render("execute query") + "\n\n")
-
-	// Viewport Navigation
-	helpText.WriteString(titleStyle.Render("Viewport Navigation:") + "\n")
-	helpText.WriteString(keyStyle.Render("↑/k") + " " + descStyle.Render("scroll up") + "\n")
-	helpText.WriteString(keyStyle.Render("↓/j") + " " + descStyle.Render("scroll down") + "\n")
-	helpText.WriteString(keyStyle.Render("pgup") + " " + descStyle.Render("page up") + "\n")
-	helpText.WriteString(keyStyle.Render("pgdn") + " " + descStyle.Render("page down") + "\n")
-	helpText.WriteString(keyStyle.Render("home") + " " + descStyle.Render("go to top") + "\n")
-	helpText.WriteString(keyStyle.Render("end") + " " + descStyle.Render("go to bottom") + "\n\n")
-
-	// Query Operations
-	helpText.WriteString(titleStyle.Render("Query Operations:") + "\n")
-	helpText.WriteString(keyStyle.Render("s") + " " + descStyle.Render("search queries (type to filter, ↑/↓ navigate, enter select, esc cancel)") + "\n")
-	helpText.WriteString(keyStyle.Render("e") + " " + descStyle.Render("edit query") + "\n")
-	helpText.WriteString(keyStyle.Render("n") + " " + descStyle.Render("new query") + "\n")
-	helpText.WriteString(keyStyle.Render("ctrl+d") + " " + descStyle.Render("delete query (in edit mode)") + "\n")
-	helpText.WriteString(keyStyle.Render("d") + " " + descStyle.Render("dump queries") + "\n")
-	helpText.WriteString(keyStyle.Render("x") + " " + descStyle.Render("psql prompt") + "\n\n")
-
-	// Active View
-	helpText.WriteString(titleStyle.Render("Active View:") + "\n")
-	helpText.WriteString(keyStyle.Render("↑/k") + " " + descStyle.Render("select previous process") + "\n")
-	helpText.WriteString(keyStyle.Render("↓/j") + " " + descStyle.Render("select next process") + "\n")
-	helpText.WriteString(keyStyle.Render("enter") + " " + descStyle.Render("view process details") + "\n")
-	helpText.WriteString(keyStyle.Render("t") + " " + descStyle.Render("terminate backend") + "\n")
-	helpText.WriteString(keyStyle.Render("c") + " " + descStyle.Render("cancel query") + "\n")
-	helpText.WriteString(keyStyle.Render("y") + " " + descStyle.Render("copy query to clipboard (detail view)") + "\n")
-	helpText.WriteString(keyStyle.Render("esc") + " " + descStyle.Render("back to list / quit") + "\n\n")
-
-	// System
-	helpText.WriteString(titleStyle.Render("System:") + "\n")
-	helpText.WriteString(keyStyle.Render("?") + " " + descStyle.Render("toggle help") + "\n")
-	helpText.WriteString(keyStyle.Render("c") + " " + descStyle.Render("return to connection picker") + "\n")
-	helpText.WriteString(keyStyle.Render("esc") + " " + descStyle.Render("quit") + "\n")
+	section("Tabs:",
+		[2]string{"←/h →/l", "previous / next tab"},
+		[2]string{"click", "select tab"},
+		[2]string{"enter/space/r", "refresh now"},
+	)
+	section("Refresh:",
+		[2]string{"p", "pause / resume auto-refresh"},
+		[2]string{"+ / -", "refresh less / more often (1s to 1m)"},
+	)
+	section("Scrolling:",
+		[2]string{"↑/k ↓/j", "scroll results"},
+		[2]string{"pgup/pgdn", "page up / down"},
+		[2]string{"home/end", "top / bottom"},
+	)
+	section("Saved Queries:",
+		[2]string{"s", "fuzzy search all queries, including hidden ones"},
+		[2]string{"e", "edit query"},
+		[2]string{"n", "new query"},
+		[2]string{"ctrl+s", "save (in editor)"},
+		[2]string{"ctrl+d ctrl+d", "delete (in editor; press twice)"},
+		[2]string{"x", "open psql"},
+	)
+	section("Home:",
+		[2]string{"b / click", "open the lock tree from the blocked-queries widget"},
+	)
+	section("Active:",
+		[2]string{"↑/k ↓/j", "select session"},
+		[2]string{"enter", "session details"},
+		[2]string{"t / c", "terminate backend / cancel query"},
+		[2]string{"b", "lock tree: only blocking chains, nested under root blockers"},
+		[2]string{"o", "cycle sort (duration, blocking, state, user, database)"},
+		[2]string{"/", "filter by pid, user, database, state, app, client or query"},
+		[2]string{"y", "copy query (in details)"},
+		[2]string{"esc", "back (details, filter, lock tree)"},
+	)
+	section("Statements:",
+		[2]string{"w", "window: last 10s / 1m / 5m"},
+		[2]string{"o", "cycle sort (total time, calls, rows, mean, disk reads)"},
+	)
+	section("System:",
+		[2]string{"?", "toggle help"},
+		[2]string{"c", "back to the service picker"},
+		[2]string{"q/ctrl+c", "quit"},
+	)
 
 	return helpText.String()
 }

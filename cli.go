@@ -273,3 +273,28 @@ func writeJSON(w io.Writer, res *resultSet) error {
 	_, err := io.WriteString(w, b.String())
 	return err
 }
+
+// importDefaults merges the embedded starter pack into the user's queries
+func importDefaults(w io.Writer) error {
+	if globalQueryDB == nil {
+		if err := initQueryDB(); err != nil {
+			return err
+		}
+	}
+	added, skipped, err := globalQueryDB.ImportDefaults()
+	if err != nil {
+		return err
+	}
+	if len(added) == 0 {
+		fmt.Fprintf(w, "You already have all %d starter queries.\n", len(skipped))
+		return nil
+	}
+	fmt.Fprintf(w, "Added %d starter queries as hidden queries (find them with s in psq):\n", len(added))
+	for _, name := range added {
+		fmt.Fprintf(w, "  %s\n", name)
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(w, "Kept your existing %d queries with the same names unchanged.\n", len(skipped))
+	}
+	return nil
+}

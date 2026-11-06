@@ -302,13 +302,18 @@ func (m *Model) filterQueries() {
 		return
 	}
 
+	// Fuzzy matches on the name rank first, then plain matches in the description
+	byName := fuzzyRank(m.searchQuery, len(m.allQueries), func(i int) string { return m.allQueries[i].Name })
+	matched := make(map[int]bool, len(byName))
 	var filtered []Query
-	searchLower := strings.ToLower(m.searchQuery)
-
-	for _, query := range m.allQueries { // Search through all queries
-		if strings.Contains(strings.ToLower(query.Name), searchLower) ||
-			strings.Contains(strings.ToLower(query.Description), searchLower) {
-			filtered = append(filtered, query)
+	for _, i := range byName {
+		matched[i] = true
+		filtered = append(filtered, m.allQueries[i])
+	}
+	needle := strings.ToLower(m.searchQuery)
+	for i, q := range m.allQueries {
+		if !matched[i] && strings.Contains(strings.ToLower(q.Description), needle) {
+			filtered = append(filtered, q)
 		}
 	}
 

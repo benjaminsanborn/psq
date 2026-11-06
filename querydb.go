@@ -147,55 +147,6 @@ func (qdb *QueryDB) migrateFromFiles() error {
 	return nil
 }
 
-func (qdb *QueryDB) createDefaultQueries() error {
-	defaultQueries := []Query{
-		{
-			Name:          "Lock Information",
-			Description:   "Show current locks",
-			SQL:           "SELECT l.pid, l.mode, l.granted, a.usename, a.query FROM pg_locks l JOIN pg_stat_activity a ON l.pid = a.pid WHERE NOT l.granted ORDER BY l.pid;",
-			OrderPosition: &[]int{1}[0],
-		},
-		{
-			Name:          "Replication Lag",
-			Description:   "Show replication lag information",
-			SQL:           "SELECT application_name, pg_wal_lsn_diff(sent_lsn, replay_lsn) as lag_bytes, client_addr, state, sent_lsn, write_lsn, flush_lsn, replay_lsn FROM pg_stat_replication;",
-			OrderPosition: &[]int{2}[0],
-		},
-		{
-			Name:          "Top Queries",
-			Description:   "Requires pg_stat_statements; identifies heavy hitters",
-			SQL:           "SELECT LEFT(query, 40) AS query, calls, total_exec_time, mean_exec_time, rows, shared_blks_hit, shared_blks_read, temp_blks_written FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 25;",
-			OrderPosition: &[]int{3}[0],
-		},
-		{
-			Name:          "Index Creation",
-			Description:   "Show progress of index creation operations",
-			SQL:           "SELECT p.pid, c.relname AS table_name, ic.relname AS index_name, p.phase, p.lockers_done || '/' || p.lockers_total AS locks, p.blocks_done || '/' || p.blocks_total AS blocks, p.tuples_done || '/' || p.tuples_total AS tupes, p.partitions_done || '/' || p.partitions_total AS parts FROM pg_stat_progress_create_index p JOIN pg_class c  ON p.relid = c.oid JOIN pg_class ic ON p.index_relid = ic.oid;",
-			OrderPosition: &[]int{4}[0],
-		},
-		{
-			Name:          "Table Replication State",
-			Description:   "The state of logical replication for each table in the public schema",
-			SQL:           "SELECT s.subname AS subscription, r.srsubstate AS table_state, ARRAY_AGG(c.relname ORDER BY c.relname) AS tables FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_subscription_rel r ON r.srrelid = c.oid LEFT JOIN pg_subscription s     ON s.oid = r.srsubid WHERE n.nspname = 'public' AND c.relkind IN ('r','p','f') GROUP BY s.subname, r.srsubstate ORDER BY s.subname, r.srsubstate;",
-			OrderPosition: &[]int{5}[0],
-		},
-		{
-			Name:          "Configuration Settings",
-			Description:   "All current PostgreSQL configuration settings",
-			SQL:           "SELECT name, setting, unit, category, short_desc FROM pg_settings ORDER BY category, name;",
-			OrderPosition: &[]int{6}[0],
-		},
-	}
-
-	for _, query := range defaultQueries {
-		if err := qdb.SaveQuery(query); err != nil {
-			return fmt.Errorf("failed to create default query %s: %w", query.Name, err)
-		}
-	}
-
-	return nil
-}
-
 const queryColumns = "name, description, sql, order_position, refresh_seconds"
 
 type rowScanner interface {

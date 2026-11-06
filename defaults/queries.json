@@ -1,0 +1,62 @@
+[
+  {
+    "name": "Connection States",
+    "description": "Count of connections by user and state",
+    "sql": "SELECT\n    usename,\n    COUNT(*) FILTER (WHERE state = 'active') AS active,\n    COUNT(*) FILTER (WHERE state = 'idle') AS idle,\n    COUNT(*) FILTER (WHERE state = 'idle in transaction') AS idle_in_transaction,\n    COUNT(*) FILTER (WHERE state = 'disabled') AS disabled,\n    COUNT(*) FILTER (WHERE state = 'fastpath function call') AS fastpath_function_call,\n    COUNT(*) FILTER (WHERE state = 'waiting') AS waiting\nFROM pg_stat_activity\nGROUP BY usename\nORDER BY active DESC;\n",
+    "order_position": 1
+  },
+  {
+    "name": "Lock Information",
+    "description": "Show current locks",
+    "sql": "SELECT\n    w.pid       AS waiting_pid,\n    w.usename   AS waiting_user,\n    left(w.query, 20)     AS waiting_query,\n    w.state     AS waiting_state,\n    NOW() - w.query_start AS query_age,\n    l.locktype,\n    l.mode,\n    l.relation::regclass AS relation,\n    pg_blocking_pids(w.pid) AS blocking_pids\nFROM pg_stat_activity w\nJOIN pg_locks l ON w.pid = l.pid\nWHERE NOT l.granted\nORDER BY w.query_start;\n",
+    "order_position": 2
+  },
+  {
+    "name": "Replication Lag",
+    "description": "Show replication lag information",
+    "sql": "SELECT\n  s.slot_type,\n  left(s.slot_name, 20) as slot_name,\n  left(r.application_name, 20) as app_name,\n  r.state,\n  pg_size_pretty(\n    pg_wal_lsn_diff(\n      pg_current_wal_lsn(),\n      COALESCE(r.sent_lsn, s.confirmed_flush_lsn, s.restart_lsn, '0/0'::pg_lsn)\n    )\n  ) AS publisher_lag,\n\n  -- Consumer lag only when a sender is active\n  CASE WHEN r.pid IS NOT NULL THEN\n    pg_size_pretty(pg_wal_lsn_diff(r.sent_lsn, r.write_lsn))\n  END AS consumer_lag,\n\n  -- Backlog relative to apply/replay if known; else fall back to slot restart_lsn\n  pg_size_pretty(\n    pg_wal_lsn_diff(\n      pg_current_wal_lsn(),\n      COALESCE(r.replay_lsn, s.restart_lsn, '0/0'::pg_lsn)\n    )\n  ) AS backlog_bytes,\n\n  -- Raw sender LSNs (NULL when inactive)\n  r.replay_lsn, r.sent_lsn, r.write_lsn, r.flush_lsn\n\nFROM pg_replication_slots AS s\nLEFT JOIN pg_stat_replication AS r\n  ON r.pid = s.active_pid\nORDER BY s.slot_name;\n",
+    "order_position": 3
+  },
+  {
+    "name": "Vacuum Progress",
+    "description": "Progress of active vacuum tasks",
+    "sql": "SELECT\n    p.pid,\n    LEFT(c.relname,20) AS table_name,\n    p.phase,\n    p.heap_blks_scanned || '/' || p.heap_blks_total AS heap_blocks,\n    p.heap_blks_vacuumed || '/' || p.heap_blks_total AS vacuumed_blocks,\n    p.index_vacuum_count AS index_vacuums\nFROM\n    pg_stat_progress_vacuum p\nJOIN\n    pg_class c ON p.relid = c.oid;\n",
+    "order_position": 4,
+    "refresh_seconds": 2
+  },
+  {
+    "name": "Autovacuum Stats",
+    "description": "State of autovacuum",
+    "sql": "SELECT\n    left(s.relname,20) AS relname,\n    s.n_dead_tup || '/' || s.n_live_tup AS dead_to_live,\n    s.vacuum_count AS vacs,\n    s.autovacuum_count AS autovacs,\n    s.analyze_count AS analyzes,\n    s.autoanalyze_count AS autoanalyzes,\n    to_char(GREATEST(s.last_vacuum, s.last_autovacuum),'yyyy-mm-dd') AS last_vac,\n    to_char(GREATEST(s.last_analyze, s.last_autoanalyze),'yyyy-mm-dd') AS last_analyze,\n    age(c.relfrozenxid)      AS xid_age,\n    mxid_age(c.relminmxid)   AS mxid_age,\n    CASE\n        WHEN age(c.relfrozenxid) > 1500000000 THEN 'CRITICAL'\n        WHEN age(c.relfrozenxid) > 1000000000 THEN 'WARNING'\n        ELSE 'OK'\n    END AS xid_wraparound_risk\nFROM pg_stat_user_tables s\nJOIN pg_class c ON s.relid = c.oid\nORDER BY age(c.relfrozenxid) DESC;\n",
+    "refresh_seconds": 10
+  },
+  {
+    "name": "Configuration Settings",
+    "description": "All current PostgreSQL configuration settings",
+    "sql": "SELECT name, setting, unit, category, short_desc FROM pg_settings ORDER BY category, name;\n",
+    "refresh_seconds": 0
+  },
+  {
+    "name": "Index Creation",
+    "description": "Show progress of index creation operations",
+    "sql": "SELECT p.pid, c.relname AS table_name, ic.relname AS index_name, p.phase, p.lockers_done || '/' || p.lockers_total AS locks, p.blocks_done || '/' || p.blocks_total AS blocks, p.tuples_done || '/' || p.tuples_total AS tupes, p.partitions_done || '/' || p.partitions_total AS parts FROM pg_stat_progress_create_index p LEFT JOIN pg_class c  ON p.relid = c.oid LEFT JOIN pg_class ic ON p.index_relid = ic.oid;\n",
+    "refresh_seconds": 2
+  },
+  {
+    "name": "Table IO Stats",
+    "description": "pg_statio_user_tables",
+    "sql": "SELECT LEFT(relname, 20) AS relname, heap_blks_read, heap_blks_hit, idx_blks_read, idx_blks_hit, toast_blks_read, toast_blks_hit, tidx_blks_read, tidx_blks_hit FROM  pg_statio_user_tables ORDER BY heap_blks_read DESC;\n",
+    "refresh_seconds": 10
+  },
+  {
+    "name": "Table Replication State",
+    "description": "The state of logical replication for each table in the public schema",
+    "sql": "SELECT s.subname AS subscription, r.srsubstate AS table_state, ARRAY_AGG(c.relname ORDER BY c.relname) AS tables FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_subscription_rel r ON r.srrelid = c.oid LEFT JOIN pg_subscription s     ON s.oid = r.srsubid WHERE n.nspname = 'public' AND c.relkind IN ('r','p','f') GROUP BY s.subname, r.srsubstate ORDER BY s.subname, r.srsubstate;\n",
+    "refresh_seconds": 10
+  },
+  {
+    "name": "Top Queries",
+    "description": "Requires pg_stat_statements; identifies heavy hitters",
+    "sql": "SELECT LEFT(query, 40) AS query, calls, total_exec_time, mean_exec_time, rows, shared_blks_hit, shared_blks_read, temp_blks_written FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 25;\n"
+  }
+]

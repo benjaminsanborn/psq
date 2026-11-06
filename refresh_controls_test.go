@@ -10,7 +10,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-
 func TestIntervalSteps(t *testing.T) {
 	m := newTestModel()
 	if m.globalInterval() != settings.RefreshInterval {

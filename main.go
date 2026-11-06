@@ -23,6 +23,7 @@ func main() {
 		rawSQL    string
 		format    string
 		listOnly  bool
+		importDef bool
 	)
 
 	var rootCmd = &cobra.Command{
@@ -59,6 +60,9 @@ Configuration:
 
 			if listOnly {
 				return listQueries(os.Stdout)
+			}
+			if importDef {
+				return importDefaults(os.Stdout)
 			}
 
 			if queryName != "" || rawSQL != "" {
@@ -101,6 +105,7 @@ Configuration:
 	flags.StringVar(&rawSQL, "sql", "", "run SQL once (in a read-only transaction), print it and exit")
 	flags.StringVarP(&format, "format", "f", formatTable, "output format for --query/--sql: table, csv or json")
 	flags.BoolVar(&listOnly, "list-queries", false, "list saved queries and exit")
+	flags.BoolVar(&importDef, "import-defaults", false, "add any starter queries you don't have yet (as hidden queries) and exit")
 	flags.DurationVar(&settings.RefreshInterval, "refresh", settings.RefreshInterval, "default auto-refresh interval (change it live with +/-)")
 	flags.DurationVar(&settings.StatementTimeout, "statement-timeout", settings.StatementTimeout, "cancel any statement psq runs after this long (0 to disable)")
 
