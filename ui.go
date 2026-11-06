@@ -31,7 +31,8 @@ func (m *Model) updateContent() {
 		lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("201")).
-			Render(m.service)
+			Render(m.service) +
+		"  " + lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(m.refreshStatus())
 
 	// Show help if requested
 	if m.showHelp {
@@ -136,9 +137,17 @@ func (m *Model) renderEditMode() string {
 	}
 	content += "Order Position (empty to hide from tabs):\n" + orderStyle.Render(m.orderInput.View()) + "\n\n"
 
+	// Refresh input
+	refreshStyle := lipgloss.NewStyle()
+	if m.editFocus == 3 {
+		refreshStyle = refreshStyle.BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("86"))
+	}
+	content += "Refresh Every (seconds; empty = global interval, 0 = manual):\n" + refreshStyle.Render(m.refreshInput.View()) + "\n\n"
+
 	// SQL textarea
 	sqlStyle := lipgloss.NewStyle()
-	if m.editFocus == 3 {
+	if m.editFocus == 4 {
 		sqlStyle = sqlStyle.BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("86"))
 	}
@@ -248,4 +257,19 @@ func (m *Model) customHelpView() string {
 	helpText.WriteString(keyStyle.Render("esc") + " " + descStyle.Render("quit") + "\n")
 
 	return helpText.String()
+}
+
+// refreshStatus describes the current tab's auto-refresh for the header
+func (m *Model) refreshStatus() string {
+	switch {
+	case m.paused:
+		return "⏸ paused (p to resume)"
+	case m.currentInterval() == 0:
+		return "↻ manual (r to refresh)"
+	}
+	status := "↻ every " + formatWindow(m.currentInterval())
+	if m.lastQuery.RefreshSeconds != nil {
+		status += " (set on this query)"
+	}
+	return status
 }

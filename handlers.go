@@ -266,6 +266,25 @@ func (m *Model) handleNormalModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return returnToPickerMsg{}
 		}
 
+	case "p":
+		m.paused = !m.paused
+		if !m.paused && len(m.queries) > 0 {
+			// Resume with fresh data; the result restarts the tick chain
+			m.loading = true
+			m.updateContent()
+			return m, m.runQuery(m.lastQuery)
+		}
+		m.updateContent()
+		return m, nil
+	case "+", "=":
+		m.stepInterval(1)
+		m.updateContent()
+		return m, nil
+	case "-", "_":
+		m.stepInterval(-1)
+		m.updateContent()
+		return m, nil
+
 	case "s":
 		m.previousSelected = m.selected
 		m.searchMode = true
@@ -459,7 +478,10 @@ func (m *Model) applyResult(results string) (tea.Model, tea.Cmd) {
 	m.consecutiveErrors = 0
 	m.lastRefreshAt = time.Now()
 	m.updateContent()
-	return m, scheduleTick(refreshInterval)
+	if d := m.currentInterval(); d > 0 && !m.paused {
+		return m, scheduleTick(d)
+	}
+	return m, nil
 }
 
 func scheduleTick(d time.Duration) tea.Cmd {
@@ -534,10 +556,16 @@ func (m *Model) handleQueryError(msg queryErrorMsg) (tea.Model, tea.Cmd) {
 	m.lastRefreshAt = time.Now()
 	m.updateContent()
 	// Keep refreshing so a transient failure doesn't freeze the view
-	return m, scheduleTick(refreshDelay(m.consecutiveErrors))
+	if d := m.currentInterval(); d > 0 && !m.paused {
+		return m, scheduleTick(refreshDelay(d, m.consecutiveErrors))
+	}
+	return m, nil
 }
 
 func (m *Model) handleTickMsg() (tea.Model, tea.Cmd) {
+	if m.paused || m.currentInterval() == 0 {
+		return m, nil // the chain restarts on resume or the next manual refresh
+	}
 	if len(m.queries) > 0 && m.canRefresh() {
 		m.loading = true
 		m.updateContent()

@@ -49,19 +49,21 @@ type psqlExitMsg struct {
 	err error
 }
 
-const (
-	refreshInterval   = 1 * time.Second
-	maxRefreshBackoff = 30 * time.Second
-)
+const maxRefreshBackoff = 30 * time.Second
+
+// refreshSteps are the global intervals +/- move between
+var refreshSteps = []time.Duration{
+	time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second, 30 * time.Second, time.Minute,
+}
 
 // refreshDelay returns how long to wait before the next auto-refresh, backing
-// off exponentially while queries keep failing
-func refreshDelay(consecutiveErrors int) time.Duration {
-	delay := refreshInterval
+// off exponentially from base while queries keep failing
+func refreshDelay(base time.Duration, consecutiveErrors int) time.Duration {
+	delay := base
 	for i := 1; i < consecutiveErrors; i++ {
 		delay *= 2
 		if delay >= maxRefreshBackoff {
-			return maxRefreshBackoff
+			return max(base, maxRefreshBackoff)
 		}
 	}
 	return delay

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -32,6 +33,15 @@ func (m *Model) initEditor(query Query) {
 	}
 	m.orderInput.CharLimit = 10
 	m.orderInput.Width = 30
+
+	// Initialize refresh input
+	m.refreshInput = textinput.New()
+	m.refreshInput.Placeholder = "Seconds (empty for the global interval, 0 for manual)"
+	if query.RefreshSeconds != nil {
+		m.refreshInput.SetValue(fmt.Sprintf("%d", *query.RefreshSeconds))
+	}
+	m.refreshInput.CharLimit = 6
+	m.refreshInput.Width = 50
 
 	// Initialize SQL textarea
 	m.sqlTextarea = textarea.New()
@@ -148,6 +158,16 @@ func (m *Model) handleSaveQuery() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if refreshStr := strings.TrimSpace(m.refreshInput.Value()); refreshStr != "" {
+		sec, err := strconv.Atoi(refreshStr)
+		if err != nil || sec < 0 {
+			m.editErr = "Cannot save query: refresh must be a whole number of seconds (0 for manual)"
+			m.updateContent()
+			return m, nil
+		}
+		newQuery.RefreshSeconds = &sec
+	}
+
 	// Parse order position, but don't persist a temporary tab position
 	orderStr := strings.TrimSpace(m.orderInput.Value())
 	oldName := m.editQuery.Name
@@ -211,17 +231,18 @@ func (m *Model) handleSaveQuery() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleTabNavigation(key string) (tea.Model, tea.Cmd) {
-	// Cycle through inputs (4 total: name, description, order, sql)
+	// Cycle through inputs (5 total: name, description, order, refresh, sql)
 	if key == "tab" {
-		m.editFocus = (m.editFocus + 1) % 4
+		m.editFocus = (m.editFocus + 1) % 5
 	} else {
-		m.editFocus = (m.editFocus + 3) % 4
+		m.editFocus = (m.editFocus + 4) % 5
 	}
 
 	// Update focus
 	m.nameInput.Blur()
 	m.descInput.Blur()
 	m.orderInput.Blur()
+	m.refreshInput.Blur()
 	m.sqlTextarea.Blur()
 
 	switch m.editFocus {
@@ -232,6 +253,8 @@ func (m *Model) handleTabNavigation(key string) (tea.Model, tea.Cmd) {
 	case 2:
 		m.orderInput.Focus()
 	case 3:
+		m.refreshInput.Focus()
+	case 4:
 		m.sqlTextarea.Focus()
 	}
 	m.updateContent()
@@ -249,6 +272,8 @@ func (m *Model) handleEditInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case 2:
 		m.orderInput, cmd = m.orderInput.Update(msg)
 	case 3:
+		m.refreshInput, cmd = m.refreshInput.Update(msg)
+	case 4:
 		m.sqlTextarea, cmd = m.sqlTextarea.Update(msg)
 	}
 	m.updateContent()

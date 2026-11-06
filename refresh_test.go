@@ -42,9 +42,13 @@ func TestRefreshDelayBacksOff(t *testing.T) {
 		50: maxRefreshBackoff,
 	}
 	for n, want := range tests {
-		if got := refreshDelay(n); got != want {
-			t.Errorf("refreshDelay(%d) = %v, want %v", n, got, want)
+		if got := refreshDelay(time.Second, n); got != want {
+			t.Errorf("refreshDelay(1s, %d) = %v, want %v", n, got, want)
 		}
+	}
+	// A base above the cap is never shortened by backoff
+	if got := refreshDelay(time.Minute, 4); got != time.Minute {
+		t.Errorf("refreshDelay(1m, 4) = %v, want 1m", got)
 	}
 }
 

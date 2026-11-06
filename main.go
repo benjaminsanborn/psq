@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	zone "github.com/lrstanley/bubblezone"
 	"github.com/spf13/cobra"
@@ -49,6 +50,12 @@ Configuration:
 			if len(args) > 0 {
 				service = args[0]
 			}
+			if settings.RefreshInterval < 500*time.Millisecond {
+				return fmt.Errorf("--refresh must be at least 500ms")
+			}
+			if settings.StatementTimeout < 0 {
+				return fmt.Errorf("--statement-timeout can't be negative")
+			}
 
 			if listOnly {
 				return listQueries(os.Stdout)
@@ -94,6 +101,7 @@ Configuration:
 	flags.StringVar(&rawSQL, "sql", "", "run SQL once (in a read-only transaction), print it and exit")
 	flags.StringVarP(&format, "format", "f", formatTable, "output format for --query/--sql: table, csv or json")
 	flags.BoolVar(&listOnly, "list-queries", false, "list saved queries and exit")
+	flags.DurationVar(&settings.RefreshInterval, "refresh", settings.RefreshInterval, "default auto-refresh interval (change it live with +/-)")
 	flags.DurationVar(&settings.StatementTimeout, "statement-timeout", settings.StatementTimeout, "cancel any statement psq runs after this long (0 to disable)")
 
 	if err := rootCmd.Execute(); err != nil {

@@ -54,12 +54,12 @@ func (qdb *QueryDB) initSchema() error {
 			description TEXT NOT NULL,
 			sql TEXT NOT NULL,
 			order_position INTEGER,
+			refresh_seconds INTEGER,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_queries_name ON queries(name);
-		CREATE INDEX IF NOT EXISTS idx_queries_order ON queries(order_position);
 	`
 
 	_, err := qdb.db.Exec(schema)
@@ -72,51 +72,32 @@ func (qdb *QueryDB) initSchema() error {
 	// Saved queries can't share a name with a built-in tab; keep them under a new name
 	_, _ = qdb.db.Exec("UPDATE OR IGNORE queries SET name = name || ' (saved)' WHERE name IN ('Home', 'Statements')")
 
-	// Check if order_position column exists (for migration)
-	rows, err := qdb.db.Query("PRAGMA table_info(queries)")
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	hasOrderColumn := false
-	for rows.Next() {
-		var cid int
-		var name, dataType string
-		var notNull, pk int
-		var defaultValue interface{}
-
-		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
-			continue
-		}
-
-		if name == "order_position" {
-			hasOrderColumn = true
-			break
-		}
-	}
-
-	// Add order_position column if it doesn't exist
-	if !hasOrderColumn {
-		_, err = qdb.db.Exec("ALTER TABLE queries ADD COLUMN order_position INTEGER")
-		if err != nil {
+	// Databases from older versions may predate these columns
+	if !qdb.columnExists("order_position") {
+		if _, err := qdb.db.Exec("ALTER TABLE queries ADD COLUMN order_position INTEGER"); err != nil {
 			return err
 		}
-
-		// Set default order for existing queries
-		_, err = qdb.db.Exec(`
-			UPDATE queries 
-			SET order_position = (
-				SELECT ROW_NUMBER() OVER (ORDER BY name) 
-				FROM (SELECT DISTINCT name FROM queries q2 WHERE q2.name = queries.name)
-			)
-		`)
-		if err != nil {
+		// Show every existing query as a tab, alphabetically
+		if _, err := qdb.db.Exec(`
+			UPDATE queries
+			SET order_position = (SELECT COUNT(*) FROM queries q2 WHERE q2.name <= queries.name)
+		`); err != nil {
 			return err
 		}
 	}
+	if !qdb.columnExists("refresh_seconds") {
+		if _, err := qdb.db.Exec("ALTER TABLE queries ADD COLUMN refresh_seconds INTEGER"); err != nil {
+			return err
+		}
+	}
+	_, err = qdb.db.Exec("CREATE INDEX IF NOT EXISTS idx_queries_order ON queries(order_position)")
+	return err
+}
 
-	return nil
+func (qdb *QueryDB) columnExists(column string) bool {
+	var n int
+	err := qdb.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('queries') WHERE name = ?", column).Scan(&n)
+	return err == nil && n > 0
 }
 
 func (qdb *QueryDB) migrateFromFiles() error {
@@ -215,175 +196,84 @@ func (qdb *QueryDB) createDefaultQueries() error {
 	return nil
 }
 
+const queryColumns = "name, description, sql, order_position, refresh_seconds"
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanQuery(r rowScanner) (Query, error) {
+	var q Query
+	var orderPos, refresh sql.NullInt64
+	if err := r.Scan(&q.Name, &q.Description, &q.SQL, &orderPos, &refresh); err != nil {
+		return q, err
+	}
+	if orderPos.Valid {
+		pos := int(orderPos.Int64)
+		q.OrderPosition = &pos
+	}
+	if refresh.Valid {
+		sec := int(refresh.Int64)
+		q.RefreshSeconds = &sec
+	}
+	return q, nil
+}
+
+func (qdb *QueryDB) selectQueries(where string) ([]Query, error) {
+	rows, err := qdb.db.Query("SELECT " + queryColumns + " FROM queries " + where)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var queries []Query
+	for rows.Next() {
+		q, err := scanQuery(rows)
+		if err != nil {
+			return nil, err
+		}
+		queries = append(queries, q)
+	}
+	return queries, rows.Err()
+}
+
+// LoadQueries returns the queries shown as tabs, in tab order
 func (qdb *QueryDB) LoadQueries() ([]Query, error) {
-	// First check if order_position column exists
-	hasOrderColumn := qdb.hasOrderPositionColumn()
-
-	var query string
-	if hasOrderColumn {
-		query = `
-			SELECT name, description, sql, order_position 
-			FROM queries 
-			WHERE order_position IS NOT NULL 
-			ORDER BY order_position, name
-		`
-	} else {
-		query = `
-			SELECT name, description, sql 
-			FROM queries 
-			ORDER BY name
-		`
-	}
-
-	rows, err := qdb.db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var queries []Query
-	for rows.Next() {
-		var query Query
-		if hasOrderColumn {
-			var orderPos sql.NullInt64
-			if err := rows.Scan(&query.Name, &query.Description, &query.SQL, &orderPos); err != nil {
-				return nil, err
-			}
-
-			if orderPos.Valid {
-				pos := int(orderPos.Int64)
-				query.OrderPosition = &pos
-			}
-		} else {
-			if err := rows.Scan(&query.Name, &query.Description, &query.SQL); err != nil {
-				return nil, err
-			}
-		}
-
-		queries = append(queries, query)
-	}
-
-	return queries, rows.Err()
+	return qdb.selectQueries("WHERE order_position IS NOT NULL ORDER BY order_position, name")
 }
 
-func (qdb *QueryDB) hasOrderPositionColumn() bool {
-	rows, err := qdb.db.Query("PRAGMA table_info(queries)")
-	if err != nil {
-		return false
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var cid int
-		var name, dataType string
-		var notNull, pk int
-		var defaultValue interface{}
-
-		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
-			continue
-		}
-
-		if name == "order_position" {
-			return true
-		}
-	}
-	return false
-}
-
+// LoadAllQueries returns every saved query, tabs first, then hidden ones by name
 func (qdb *QueryDB) LoadAllQueries() ([]Query, error) {
-	// First check if order_position column exists
-	hasOrderColumn := qdb.hasOrderPositionColumn()
-
-	var query string
-	if hasOrderColumn {
-		query = `
-			SELECT name, description, sql, order_position 
-			FROM queries 
-			ORDER BY COALESCE(order_position, 999999), name
-		`
-	} else {
-		query = `
-			SELECT name, description, sql 
-			FROM queries 
-			ORDER BY name
-		`
-	}
-
-	rows, err := qdb.db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var queries []Query
-	for rows.Next() {
-		var query Query
-		if hasOrderColumn {
-			var orderPos sql.NullInt64
-			if err := rows.Scan(&query.Name, &query.Description, &query.SQL, &orderPos); err != nil {
-				return nil, err
-			}
-
-			if orderPos.Valid {
-				pos := int(orderPos.Int64)
-				query.OrderPosition = &pos
-			}
-		} else {
-			if err := rows.Scan(&query.Name, &query.Description, &query.SQL); err != nil {
-				return nil, err
-			}
-		}
-
-		queries = append(queries, query)
-	}
-
-	return queries, rows.Err()
+	return qdb.selectQueries("ORDER BY COALESCE(order_position, 999999), name")
 }
 
-func (qdb *QueryDB) SaveQuery(query Query) error {
-	// Check if order_position column exists
-	hasOrderColumn := qdb.hasOrderPositionColumn()
-
-	if hasOrderColumn {
-		var orderPos interface{}
-		if query.OrderPosition != nil {
-			orderPos = *query.OrderPosition
-		}
-
-		_, err := qdb.db.Exec(`
-			INSERT OR REPLACE INTO queries (name, description, sql, order_position, updated_at) 
-			VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-		`, query.Name, query.Description, query.SQL, orderPos)
-
-		return err
-	} else {
-		_, err := qdb.db.Exec(`
-			INSERT OR REPLACE INTO queries (name, description, sql, updated_at) 
-			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-		`, query.Name, query.Description, query.SQL)
-
-		return err
+func nullableInt(p *int) any {
+	if p == nil {
+		return nil
 	}
+	return *p
+}
+
+// SaveQuery inserts or replaces a query by name; used for imports
+func (qdb *QueryDB) SaveQuery(query Query) error {
+	_, err := qdb.db.Exec(`
+		INSERT OR REPLACE INTO queries (name, description, sql, order_position, refresh_seconds, updated_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, query.Name, query.Description, query.SQL, nullableInt(query.OrderPosition), nullableInt(query.RefreshSeconds))
+	return err
 }
 
 // ErrQueryExists is returned when creating or renaming a query would take a
 // name another saved query already uses
 var ErrQueryExists = errors.New("a query with that name already exists")
 
-func nullableOrder(q Query) interface{} {
-	if q.OrderPosition == nil {
-		return nil
-	}
-	return *q.OrderPosition
-}
-
 // CreateQuery inserts a new query, refusing to overwrite an existing one
 func (qdb *QueryDB) CreateQuery(query Query) error {
 	res, err := qdb.db.Exec(`
-		INSERT INTO queries (name, description, sql, order_position)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO queries (name, description, sql, order_position, refresh_seconds)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO NOTHING
-	`, query.Name, query.Description, query.SQL, nullableOrder(query))
+	`, query.Name, query.Description, query.SQL, nullableInt(query.OrderPosition), nullableInt(query.RefreshSeconds))
 	if err != nil {
 		return err
 	}
@@ -406,9 +296,9 @@ func (qdb *QueryDB) UpdateQuery(oldName string, query Query) error {
 	}
 	res, err := qdb.db.Exec(`
 		UPDATE queries
-		SET name = ?, description = ?, sql = ?, order_position = ?, updated_at = CURRENT_TIMESTAMP
+		SET name = ?, description = ?, sql = ?, order_position = ?, refresh_seconds = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE name = ?
-	`, query.Name, query.Description, query.SQL, nullableOrder(query), oldName)
+	`, query.Name, query.Description, query.SQL, nullableInt(query.OrderPosition), nullableInt(query.RefreshSeconds), oldName)
 	if err != nil {
 		return err
 	}
@@ -424,34 +314,7 @@ func (qdb *QueryDB) DeleteQuery(name string) error {
 }
 
 func (qdb *QueryDB) GetQuery(name string) (Query, error) {
-	var query Query
-
-	// First check if order_position column exists
-	hasOrderColumn := qdb.hasOrderPositionColumn()
-
-	if hasOrderColumn {
-		var orderPos sql.NullInt64
-		err := qdb.db.QueryRow("SELECT name, description, sql, order_position FROM queries WHERE name = ?", name).
-			Scan(&query.Name, &query.Description, &query.SQL, &orderPos)
-
-		if err != nil {
-			return query, err
-		}
-
-		if orderPos.Valid {
-			pos := int(orderPos.Int64)
-			query.OrderPosition = &pos
-		}
-	} else {
-		err := qdb.db.QueryRow("SELECT name, description, sql FROM queries WHERE name = ?", name).
-			Scan(&query.Name, &query.Description, &query.SQL)
-
-		if err != nil {
-			return query, err
-		}
-	}
-
-	return query, nil
+	return scanQuery(qdb.db.QueryRow("SELECT "+queryColumns+" FROM queries WHERE name = ?", name))
 }
 
 func (qdb *QueryDB) LoadFromDumpFile(filePath string) error {

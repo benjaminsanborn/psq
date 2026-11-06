@@ -39,8 +39,9 @@ type Model struct {
 	nameInput         textinput.Model
 	descInput         textinput.Model
 	orderInput        textinput.Model
+	refreshInput      textinput.Model
 	sqlTextarea       textarea.Model
-	editFocus         int    // 0=name, 1=description, 2=order, 3=sql
+	editFocus         int    // 0=name, 1=description, 2=order, 3=refresh, 4=sql
 	editErr           string // save/delete failure shown in the editor; survives background refreshes
 	confirmDelete     bool   // ctrl+d was pressed once; the next ctrl+d deletes
 	help              help.Model
@@ -53,6 +54,8 @@ type Model struct {
 	consecutiveErrors int                // drives auto-refresh backoff while queries keep failing
 	cancelInflight    context.CancelFunc // cancels the query dispatched by the latest runQuery
 	stmtView          *StmtView          // Statements tab state and sample history; kept across tab switches
+	refreshInterval   time.Duration      // global auto-refresh interval, adjusted with +/-
+	paused            bool               // auto-refresh is paused; manual refreshes still run
 }
 
 type Query struct {
@@ -60,6 +63,9 @@ type Query struct {
 	Description   string `json:"description"`
 	SQL           string `json:"sql"`
 	OrderPosition *int   `json:"order_position,omitempty"` // nil means hidden from top bar
+	// RefreshSeconds overrides the global refresh interval for this query;
+	// 0 means refresh only on demand, nil means use the global interval
+	RefreshSeconds *int `json:"refresh_seconds,omitempty"`
 }
 
 // Message types for Bubble Tea
@@ -214,6 +220,45 @@ func (m *Model) reloadQueries() error {
 func (m *Model) isTemporaryQuery(queryName string) bool {
 	_, exists := m.tempQueries[queryName]
 	return exists
+}
+
+// globalInterval is the refresh interval for queries without their own
+func (m *Model) globalInterval() time.Duration {
+	if m.refreshInterval > 0 {
+		return m.refreshInterval
+	}
+	return settings.RefreshInterval
+}
+
+// currentInterval is how often the current tab refreshes; 0 means only on demand
+func (m *Model) currentInterval() time.Duration {
+	if rs := m.lastQuery.RefreshSeconds; rs != nil {
+		return time.Duration(*rs) * time.Second
+	}
+	return m.globalInterval()
+}
+
+// stepInterval moves the global interval to the next longer (dir > 0) or
+// shorter step
+func (m *Model) stepInterval(dir int) {
+	cur := m.globalInterval()
+	if dir > 0 {
+		for _, s := range refreshSteps {
+			if s > cur {
+				m.refreshInterval = s
+				return
+			}
+		}
+		m.refreshInterval = refreshSteps[len(refreshSteps)-1]
+		return
+	}
+	for i := len(refreshSteps) - 1; i >= 0; i-- {
+		if refreshSteps[i] < cur {
+			m.refreshInterval = refreshSteps[i]
+			return
+		}
+	}
+	m.refreshInterval = refreshSteps[0]
 }
 
 // statements returns the Statements tab state, creating it on first use

@@ -454,10 +454,7 @@ func renderStatements(rows []stmtRow, snap *stmtSnapshot, req stmtRequest) strin
 }
 
 func formatWindow(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	return fmt.Sprintf("%dm", int(d.Minutes()))
+	return formatDuration(int(d.Seconds()))
 }
 
 // formatMs renders milliseconds compactly: 0.42ms, 87ms, 3.2s, 4m 10s
