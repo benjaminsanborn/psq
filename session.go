@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -27,6 +28,21 @@ var settings = Settings{
 
 // applicationName identifies psq's sessions in pg_stat_activity
 const applicationName = "psq"
+
+// psqTag is appended to every statement psq sends. pg_stat_statements keeps
+// a trailing comment in its stored text (a leading one is dropped), which
+// lets the Statements tab hide psq's own monitoring queries.
+const psqTag = "/* psq */"
+
+// tagged appends psqTag, dropping trailing semicolons so the comment stays
+// part of the statement rather than starting an empty one
+func tagged(query string) string {
+	return strings.TrimRight(strings.TrimSpace(query), "; \t\n") + "\n" + psqTag
+}
+
+func isPsqStatement(text string) bool {
+	return strings.HasSuffix(strings.TrimSpace(text), psqTag)
+}
 
 // sessionConnector wraps a driver.Connector and runs setup statements on
 // every new physical connection. The statement timeout is set this way rather
@@ -89,7 +105,7 @@ func queryRows(ctx context.Context, db *sql.DB, query string, maxRows int) (*res
 	}
 	defer tx.Rollback()
 
-	r, err := tx.QueryContext(ctx, query)
+	r, err := tx.QueryContext(ctx, tagged(query))
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}

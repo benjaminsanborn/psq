@@ -25,7 +25,7 @@ func HomeQuery() Query {
 
 // RenderHomeChart renders the PostgreSQL activity state chart for the Home tab
 func RenderHomeChart(ctx context.Context, db *sql.DB, query string, chartWidth int) (string, error) {
-	rows, err := db.QueryContext(ctx, query)
+	rows, err := db.QueryContext(ctx, tagged(query))
 	if err != nil {
 		return "", fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -245,7 +245,7 @@ func (s *SparklineData) AddPoint(value float64, timestamp time.Time) {
 func GetTransactionCommits(ctx context.Context, db *sql.DB) (float64, time.Time, error) {
 	var commits float64
 	var now time.Time
-	err := db.QueryRowContext(ctx, "SELECT SUM(xact_commit), NOW() FROM pg_stat_database").Scan(&commits, &now)
+	err := db.QueryRowContext(ctx, tagged("SELECT SUM(xact_commit), NOW() FROM pg_stat_database")).Scan(&commits, &now)
 	if err != nil {
 		return 0, time.Time{}, fmt.Errorf("failed to query transaction commits: %w", err)
 	}
@@ -289,7 +289,7 @@ func RenderSparklineChart(sparklineData *SparklineData, chartWidth int) string {
 // GetCacheHitRatio queries the database for cache hit ratio percentage
 func GetCacheHitRatio(ctx context.Context, db *sql.DB) (float64, bool, error) {
 	var ratio sql.NullFloat64
-	err := db.QueryRowContext(ctx, "SELECT ROUND(SUM(blks_hit) * 100.0 / NULLIF(SUM(blks_hit) + SUM(blks_read), 0), 2) as ratio FROM pg_stat_database").Scan(&ratio)
+	err := db.QueryRowContext(ctx, tagged("SELECT ROUND(SUM(blks_hit) * 100.0 / NULLIF(SUM(blks_hit) + SUM(blks_read), 0), 2) as ratio FROM pg_stat_database")).Scan(&ratio)
 	if err != nil {
 		return 0, false, fmt.Errorf("failed to query cache hit ratio: %w", err)
 	}
@@ -314,14 +314,14 @@ type ReplicationLagInfo struct {
 // GetReplicationLag queries replication lag — replica replay lag or primary slot lag
 func GetReplicationLag(ctx context.Context, db *sql.DB) (ReplicationLagInfo, error) {
 	var isInRecovery bool
-	if err := db.QueryRowContext(ctx, "SELECT pg_is_in_recovery()").Scan(&isInRecovery); err != nil {
+	if err := db.QueryRowContext(ctx, tagged("SELECT pg_is_in_recovery()")).Scan(&isInRecovery); err != nil {
 		return ReplicationLagInfo{}, fmt.Errorf("failed to check recovery state: %w", err)
 	}
 
 	if isInRecovery {
 		// Replica: show replay lag
 		var lagSeconds sql.NullInt64
-		err := db.QueryRowContext(ctx, "SELECT EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::int").Scan(&lagSeconds)
+		err := db.QueryRowContext(ctx, tagged("SELECT EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::int")).Scan(&lagSeconds)
 		if err != nil || !lagSeconds.Valid {
 			return ReplicationLagInfo{IsReplica: true}, err
 		}
@@ -336,10 +336,10 @@ func GetReplicationLag(ctx context.Context, db *sql.DB) (ReplicationLagInfo, err
 	info := ReplicationLagInfo{IsReplica: false}
 
 	// Count slots by type
-	rows, err := db.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, tagged(`
 		SELECT slot_type, COUNT(*)
 		FROM pg_replication_slots
-		GROUP BY slot_type`)
+		GROUP BY slot_type`))
 	if err != nil {
 		return info, nil // no slots or no permission — not an error
 	}
@@ -366,13 +366,13 @@ func GetReplicationLag(ctx context.Context, db *sql.DB) (ReplicationLagInfo, err
 	var slotName sql.NullString
 	var slotType sql.NullString
 	var lagBytes sql.NullInt64
-	err = db.QueryRowContext(ctx, `
+	err = db.QueryRowContext(ctx, tagged(`
 		SELECT slot_name, slot_type,
 			pg_wal_lsn_diff(pg_current_wal_lsn(), COALESCE(confirmed_flush_lsn, restart_lsn))::bigint AS lag_bytes
 		FROM pg_replication_slots
 		WHERE active OR NOT active
 		ORDER BY lag_bytes DESC NULLS LAST
-		LIMIT 1`).Scan(&slotName, &slotType, &lagBytes)
+		LIMIT 1`)).Scan(&slotName, &slotType, &lagBytes)
 	if err != nil || !slotName.Valid {
 		return info, nil
 	}
@@ -650,7 +650,7 @@ func GetBlockingLockInfo(ctx context.Context, db *sql.DB) (BlockingLockInfo, err
 	var info BlockingLockInfo
 	var blockedCount, longestWait sql.NullInt64
 
-	err := db.QueryRowContext(ctx, sqlQuery).Scan(&blockedCount, &longestWait)
+	err := db.QueryRowContext(ctx, tagged(sqlQuery)).Scan(&blockedCount, &longestWait)
 	if err != nil {
 		return BlockingLockInfo{}, fmt.Errorf("failed to query blocking locks: %w", err)
 	}

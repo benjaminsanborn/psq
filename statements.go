@@ -204,10 +204,10 @@ type stmtSource struct {
 
 func detectStmtSource(ctx context.Context, db *sql.DB) (stmtSource, error) {
 	var src stmtSource
-	err := db.QueryRowContext(ctx, `
+	err := db.QueryRowContext(ctx, tagged(`
 		SELECT n.nspname
 		FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
-		WHERE e.extname = 'pg_stat_statements'`).Scan(&src.schema)
+		WHERE e.extname = 'pg_stat_statements'`)).Scan(&src.schema)
 	if errors.Is(err, sql.ErrNoRows) {
 		return src, errNoPgStatStatements
 	}
@@ -215,7 +215,7 @@ func detectStmtSource(ctx context.Context, db *sql.DB) (stmtSource, error) {
 		return src, err
 	}
 	var version int
-	if err := db.QueryRowContext(ctx, "SELECT current_setting('server_version_num')::int").Scan(&version); err != nil {
+	if err := db.QueryRowContext(ctx, tagged("SELECT current_setting('server_version_num')::int")).Scan(&version); err != nil {
 		return src, err
 	}
 	src.timeCol = "total_time"
@@ -228,10 +228,10 @@ func detectStmtSource(ctx context.Context, db *sql.DB) (stmtSource, error) {
 // fetchStmtSnapshot reads counters without query texts, which keeps each
 // refresh cheap even with thousands of entries
 func fetchStmtSnapshot(ctx context.Context, db *sql.DB, src stmtSource) (*stmtSnapshot, error) {
-	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
+	rows, err := db.QueryContext(ctx, tagged(fmt.Sprintf(`
 		SELECT userid::int8, dbid::int8, queryid, calls, %s, rows, shared_blks_hit, shared_blks_read
 		FROM %s.pg_stat_statements(false)
-		WHERE queryid IS NOT NULL`, src.timeCol, pq.QuoteIdentifier(src.schema)))
+		WHERE queryid IS NOT NULL`, src.timeCol, pq.QuoteIdentifier(src.schema))))
 	if err != nil {
 		return nil, err
 	}
@@ -305,10 +305,10 @@ func fillQueryTexts(ctx context.Context, db *sql.DB, src stmtSource, cache *stmt
 		}
 	}
 	if len(missing) > 0 {
-		res, err := db.QueryContext(ctx, fmt.Sprintf(`
+		res, err := db.QueryContext(ctx, tagged(fmt.Sprintf(`
 			SELECT DISTINCT ON (queryid) queryid, query
 			FROM %s.pg_stat_statements(true)
-			WHERE queryid = ANY($1)`, pq.QuoteIdentifier(src.schema)), pq.Array(missing))
+			WHERE queryid = ANY($1)`, pq.QuoteIdentifier(src.schema))), pq.Array(missing))
 		if err != nil {
 			return err
 		}
@@ -360,13 +360,21 @@ func fetchStatements(ctx context.Context, db *sql.DB, req stmtRequest) (stmtResu
 		return stmtResult{}, fmt.Errorf("failed to read pg_stat_statements: %w", err)
 	}
 
-	rows := diffStatements(snap, req.baseline, req.order)
+	// Look texts up a page at a time, skipping psq's own queries, until the
+	// screen is full
+	all := diffStatements(snap, req.baseline, req.order)
 	limit := max(5, req.height-12)
-	if len(rows) > limit {
-		rows = rows[:limit]
-	}
-	if err := fillQueryTexts(ctx, db, src, req.texts, rows); err != nil {
-		return stmtResult{}, fmt.Errorf("failed to read statement texts: %w", err)
+	var rows []stmtRow
+	for start := 0; start < len(all) && len(rows) < limit; start += limit {
+		batch := all[start:min(start+limit, len(all))]
+		if err := fillQueryTexts(ctx, db, src, req.texts, batch); err != nil {
+			return stmtResult{}, fmt.Errorf("failed to read statement texts: %w", err)
+		}
+		for _, r := range batch {
+			if !isPsqStatement(r.query) && len(rows) < limit {
+				rows = append(rows, r)
+			}
+		}
 	}
 
 	return stmtResult{snapshot: snap, rendered: renderStatements(rows, snap, req)}, nil
@@ -449,7 +457,7 @@ func renderStatements(rows []stmtRow, snap *stmtSnapshot, req stmtRequest) strin
 	}
 
 	b.WriteString("\n")
-	b.WriteString(activeDimStyle.Render("  w: window (10s/1m/5m)  o: sort  Reads = shared blocks read from disk or OS cache"))
+	b.WriteString(activeDimStyle.Render("  w: window (10s/1m/5m)  o: sort  Reads = shared blocks read from disk or OS cache  (psq's own queries are hidden)"))
 	return b.String()
 }
 

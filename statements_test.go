@@ -153,3 +153,18 @@ func TestReservedBuiltinNames(t *testing.T) {
 		t.Error("Statements is a built-in tab name")
 	}
 }
+
+func TestIsPsqStatement(t *testing.T) {
+	if !isPsqStatement(tagged("\n\t\tSELECT 1;\n")) {
+		t.Error("tagged statement not recognized")
+	}
+	if got := tagged("SELECT 1; "); got != "SELECT 1\n/* psq */" {
+		t.Errorf("tagged = %q", got)
+	}
+	if got := tagged("SELECT 1 -- note"); got != "SELECT 1 -- note\n/* psq */" {
+		t.Errorf("a trailing line comment must not swallow the tag: %q", got)
+	}
+	if isPsqStatement("SELECT '/* psq */' AS x") {
+		t.Error("tag must be a suffix, not anywhere in the text")
+	}
+}

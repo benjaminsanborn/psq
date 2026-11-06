@@ -166,7 +166,7 @@ const activeProcessesSQL = `
 
 // FetchActiveProcesses queries pg_stat_activity for non-idle and blocking processes
 func FetchActiveProcesses(ctx context.Context, db *sql.DB) ([]ActiveProcess, error) {
-	rows, err := db.QueryContext(ctx, activeProcessesSQL)
+	rows, err := db.QueryContext(ctx, tagged(activeProcessesSQL))
 	if err != nil {
 		return nil, fmt.Errorf("failed to query pg_stat_activity: %w", err)
 	}
@@ -195,7 +195,7 @@ func FetchActiveProcesses(ctx context.Context, db *sql.DB) ([]ActiveProcess, err
 // TerminateBackend calls pg_terminate_backend for the given PID
 func TerminateBackend(ctx context.Context, db *sql.DB, pid int) error {
 	var result bool
-	err := db.QueryRowContext(ctx, "SELECT pg_terminate_backend($1)", pid).Scan(&result)
+	err := db.QueryRowContext(ctx, tagged("SELECT pg_terminate_backend($1)"), pid).Scan(&result)
 	if err != nil {
 		return fmt.Errorf("pg_terminate_backend failed: %w", err)
 	}
@@ -208,7 +208,7 @@ func TerminateBackend(ctx context.Context, db *sql.DB, pid int) error {
 // CancelBackend calls pg_cancel_backend for the given PID
 func CancelBackend(ctx context.Context, db *sql.DB, pid int) error {
 	var result bool
-	err := db.QueryRowContext(ctx, "SELECT pg_cancel_backend($1)", pid).Scan(&result)
+	err := db.QueryRowContext(ctx, tagged("SELECT pg_cancel_backend($1)"), pid).Scan(&result)
 	if err != nil {
 		return fmt.Errorf("pg_cancel_backend failed: %w", err)
 	}
