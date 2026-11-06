@@ -16,7 +16,13 @@ func main() {
 	zone.NewGlobal()
 	defer zone.Close()
 
-	var service string
+	var (
+		service   string
+		queryName string
+		rawSQL    string
+		format    string
+		listOnly  bool
+	)
 
 	var rootCmd = &cobra.Command{
 		Use:   "psq [service]",
@@ -25,72 +31,70 @@ func main() {
 
 A TUI-based PostgreSQL monitoring tool that reads database connections from ~/.pg_service.conf
 
-Features:
-  • Interactive service picker with fuzzy search
-  • Pre-configured monitoring queries (connections, locks, queries, replication)
-  • Custom query editor with AI-powered query generation
-  • Real-time active connection viewer with terminate/cancel capabilities
-  • Query search across all saved queries
-  • Mouse support for tab navigation
-
 Examples:
-  psq                    # Show service picker
-  psq prod               # Connect directly to 'prod' service
-  psq -s staging         # Connect to 'staging' service
-
-Keyboard Shortcuts:
-  Navigation:    ←/→ (h/l) switch tabs, ↑/↓ (k/j) scroll, Home/End jump
-  Queries:       Enter/Space/R refresh, S search, E edit, N new query
-  Active View:   Enter details, T terminate, C cancel, Y copy query
-  Other:         ? help, X psql prompt, C service picker, Esc/Ctrl+C quit
+  psq                                   # Show service picker
+  psq prod                              # Connect directly to 'prod' service
+  psq -s staging                        # Connect to 'staging' service
+  psq prod --query Locks                # Run a saved query once and print it
+  psq prod -q Active -f json            # Sessions and blocking info as JSON
+  psq prod --sql "SELECT now()" -f csv  # Run ad-hoc SQL (read-only) as CSV
+  psq --list-queries                    # List saved queries
 
 Configuration:
   Queries:       ~/.psq/queries.db (SQLite, auto-created)
-  Connections:   ~/.pg_service.conf (PostgreSQL service file)
-  AI Features:   $OPENAI_API_KEY (optional, for query generation)`,
+  Connections:   ~/.pg_service.conf (PostgreSQL service file)`,
 		Version: version,
 		Args:    cobra.MaximumNArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
-			// Use provided service name or show picker if none provided
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				service = args[0]
-				app := NewApp(service)
-				if err := app.Run(); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-					os.Exit(1)
-				}
-			} else if service != "" {
-				app := NewApp(service)
-				if err := app.Run(); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-					os.Exit(1)
-				}
-			} else {
-				// Show service picker in a loop to allow returning
-				for {
-					picker := NewServicePicker()
-					selectedService, err := picker.Run()
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-						os.Exit(1)
-					}
-					if selectedService == "" {
-						// User quit from picker
-						break
-					}
+			}
 
-					app := NewApp(selectedService)
-					if err := app.Run(); err != nil {
-						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-						os.Exit(1)
-					}
-					// App exited normally, return to picker
+			if listOnly {
+				return listQueries(os.Stdout)
+			}
+
+			if queryName != "" || rawSQL != "" {
+				if queryName != "" && rawSQL != "" {
+					return fmt.Errorf("use either --query or --sql, not both")
 				}
+				if service == "" {
+					return fmt.Errorf("--query and --sql need a service, e.g. psq prod --query Locks")
+				}
+				return runOnce(os.Stdout, service, queryName, rawSQL, format)
+			}
+
+			if service != "" {
+				return NewApp(service).Run()
+			}
+
+			// Show service picker in a loop to allow returning
+			for {
+				picker := NewServicePicker()
+				selectedService, err := picker.Run()
+				if err != nil {
+					return err
+				}
+				if selectedService == "" {
+					return nil // user quit from picker
+				}
+				if err := NewApp(selectedService).Run(); err != nil {
+					return err
+				}
+				// App exited normally, return to picker
 			}
 		},
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 
-	rootCmd.Flags().StringVarP(&service, "service", "s", "", "Database service name from ~/.pg_service.conf (default: 'default')")
+	flags := rootCmd.Flags()
+	flags.StringVarP(&service, "service", "s", "", "service name from ~/.pg_service.conf")
+	flags.StringVarP(&queryName, "query", "q", "", "run a saved query once, print it and exit")
+	flags.StringVar(&rawSQL, "sql", "", "run SQL once (in a read-only transaction), print it and exit")
+	flags.StringVarP(&format, "format", "f", formatTable, "output format for --query/--sql: table, csv or json")
+	flags.BoolVar(&listOnly, "list-queries", false, "list saved queries and exit")
+	flags.DurationVar(&settings.StatementTimeout, "statement-timeout", settings.StatementTimeout, "cancel any statement psq runs after this long (0 to disable)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
