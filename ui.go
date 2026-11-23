@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone"
 )
 
@@ -17,26 +18,70 @@ func (m *Model) View() string {
 		return "Getting ready..."
 	}
 
-	return zone.Scan(m.viewport.View())
+	return zone.Scan(m.viewport.View() + "\n" + renderHints(m.keyHints(), m.width))
+}
+
+// headerBar is the top line: psq, the service and where it points, and the
+// refresh status on the right, all on a shaded bar
+func (m *Model) headerBar() string {
+	bar := lipgloss.NewStyle().Background(colorBarBg)
+	left := bar.Render(" ") + bar.Bold(true).Foreground(colorBlue).Render("psq") +
+		bar.Render("  ") + bar.Bold(true).Foreground(colorFg).Render(m.service)
+	if target := m.connTarget(); target != "" {
+		left += bar.Render("  ") + bar.Foreground(colorDim).Render(target)
+	}
+
+	var right string
+	switch {
+	case m.paused:
+		right = bar.Foreground(colorYellow).Render("⏸") + bar.Foreground(colorFg).Render(" paused")
+	case m.currentInterval() == 0:
+		right = bar.Foreground(colorDim).Render("↻") + bar.Foreground(colorFg).Render(" manual")
+	case m.err != "":
+		right = bar.Foreground(colorRed).Render("●") + bar.Foreground(colorFg).Render(" every "+formatWindow(m.currentInterval()))
+	default:
+		right = bar.Foreground(colorGreen).Render("●") + bar.Foreground(colorFg).Render(" every "+formatWindow(m.currentInterval()))
+	}
+	if m.lastQuery.RefreshSeconds != nil && !m.paused {
+		right += bar.Foreground(colorDim).Render(" (this query)")
+	}
+	right += bar.Render(" ")
+
+	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(right)
+	if gap < 1 {
+		return ansi.Truncate(left, m.width, "")
+	}
+	return left + bar.Render(strings.Repeat(" ", gap)) + right
+}
+
+// connTarget is "user@host:port/db" for the header, read once from the
+// service file
+func (m *Model) connTarget() string {
+	if m.target == nil {
+		target := ""
+		if cfg, err := getDBConfig(m.service); err == nil && cfg.Host != "" {
+			target = cfg.Host
+			if cfg.User != "" {
+				target = cfg.User + "@" + target
+			}
+			if cfg.Port != "" {
+				target += ":" + cfg.Port
+			}
+			if cfg.Database != "" {
+				target += "/" + cfg.Database
+			}
+		}
+		m.target = &target
+	}
+	return *m.target
 }
 
 func (m *Model) updateContent() {
-	var content string
-
-	// Header section
-	content += " " + lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("86")).
-		Render("psq@") +
-		lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("201")).
-			Render(m.service) +
-		"  " + lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(m.refreshStatus())
+	content := m.headerBar() + "\n"
 
 	// Show help if requested
 	if m.showHelp {
-		content += "\n\n" + m.customHelpView()
+		content += "\n" + m.customHelpView()
 		m.viewport.SetContent(content)
 		return
 	}
@@ -49,21 +94,21 @@ func (m *Model) updateContent() {
 		content += m.renderNormalMode()
 	}
 
-	content += "\n" + lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240")).
-		Render(strings.Repeat("─", m.width)) + "\n"
+	content += "\n" + styleDim.Render(strings.Repeat("─", m.width)) + "\n"
 
 	// Results section
+	onActive := m.activeView != nil && m.activeView.Loaded &&
+		m.selected < len(m.queries) && IsActiveTab(m.queries[m.selected].Name)
 	if m.err != "" {
-		content += "Error: " + m.err
-	} else if m.activeView != nil && m.activeView.Loaded &&
-		m.selected < len(m.queries) && IsActiveTab(m.queries[m.selected].Name) {
+		content += styleRed.Render("Error: " + m.err)
+	} else if onActive {
 		// Re-render active view from cached data so key presses take effect immediately
 		switch m.activeView.Mode {
 		case ActiveModeDetail:
 			content += RenderActiveDetail(m.activeView, m.width)
 		case ActiveModeConfirmTerminate:
-			content += RenderTerminateConfirm(m.activeView)
+			list := RenderActiveList(m.activeView, m.width, m.height)
+			content += overlay(list, RenderTerminateConfirm(m.activeView, m.width), m.width)
 		default:
 			content += RenderActiveList(m.activeView, m.width, m.height)
 		}
@@ -72,6 +117,32 @@ func (m *Model) updateContent() {
 	}
 
 	m.viewport.SetContent(content)
+}
+
+// keyHints are the keys shown in the bottom bar for whatever is on screen
+func (m *Model) keyHints() []keyHint {
+	switch {
+	case m.showHelp:
+		return []keyHint{{"esc", "close help"}, {"?", "close help"}, {"q", "quit"}}
+	case m.editMode:
+		return []keyHint{{"tab", "next field"}, {"ctrl+s", "save"}, {"ctrl+d", "delete"}, {"esc", "cancel"}}
+	case m.searchMode:
+		return []keyHint{{"type", "to search"}, {"↑/↓", "select"}, {"enter", "open"}, {"esc", "cancel"}}
+	}
+
+	tab := ""
+	if m.selected < len(m.queries) {
+		tab = m.queries[m.selected].Name
+	}
+	switch {
+	case IsActiveTab(tab) && m.activeView != nil:
+		return activeHints(m.activeView)
+	case IsHomeTab(tab):
+		return []keyHint{{"?", "help"}, {"←/→", "tabs"}, {"b", "lock tree"}, {"p", "pause"}, {"+/-", "interval"}, {"s", "search"}, {"c", "services"}, {"q", "quit"}}
+	case IsStatementsTab(tab):
+		return []keyHint{{"?", "help"}, {"←/→", "tabs"}, {"w", "window"}, {"o", "sort"}, {"p", "pause"}, {"q", "quit"}}
+	}
+	return []keyHint{{"?", "help"}, {"←/→", "tabs"}, {"↑/↓", "scroll"}, {"r", "refresh"}, {"s", "search"}, {"e", "edit"}, {"n", "new"}, {"x", "psql"}, {"p", "pause"}, {"q", "quit"}}
 }
 
 func (m *Model) renderSearchMode() string {
@@ -156,44 +227,50 @@ func (m *Model) renderEditMode() string {
 	return content
 }
 
+// renderNormalMode draws the tab bar: the current tab highlighted, the rest
+// plain. Tabs opened from search (hidden queries) are in italics.
+//
+// When the tabs don't fit, the bar scrolls to keep the current tab in view
+// and shows ‹ › where tabs are hidden.
 func (m *Model) renderNormalMode() string {
-	content := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(": Press ? for help\n")
+	widths := make([]int, len(m.queries))
+	for i, q := range m.queries {
+		widths[i] = ansi.StringWidth(q.Name) + 3 // " name " plus the gap after it
+	}
+	avail := m.width - 5 // leading space and room for ‹ ›
 
-	// Query list
-	content += "\n "
-	for i, query := range m.queries {
-		var queryText string
+	// First tab shown: the earliest one that still leaves the current tab in view
+	first, used := 0, 0
+	for i := 0; i <= m.selected && i < len(widths); i++ {
+		used += widths[i]
+	}
+	for used > avail && first < m.selected {
+		used -= widths[first]
+		first++
+	}
+
+	content := "\n "
+	if first > 0 {
+		content += styleDim.Render("‹ ")
+	}
+	used = 0
+	for i := first; i < len(m.queries); i++ {
+		if used+widths[i] > avail && i > m.selected {
+			content += styleDim.Render("›")
+			break
+		}
+		used += widths[i]
+		query := m.queries[i]
+		style := lipgloss.NewStyle().Foreground(colorDim)
 		if i == m.selected {
-			style := lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("86")).
-				Background(lipgloss.Color("235"))
-
-			// Add italics for temporary queries
-			if m.isTemporaryQuery(query.Name) {
-				style = style.Italic(true)
-			}
-
-			queryText = style.Render(query.Name)
-		} else {
-			// Non-selected queries: subtle background and padding to show they're clickable
-			baseStyle := lipgloss.NewStyle().
-				Background(lipgloss.Color("238")).
-				Foreground(lipgloss.Color("252"))
-
-			if m.isTemporaryQuery(query.Name) {
-				baseStyle = baseStyle.Italic(true)
-			}
-
-			queryText = baseStyle.Render(query.Name)
+			style = lipgloss.NewStyle().Bold(true).Foreground(colorTabFg).Background(colorBlue)
+		}
+		if m.isTemporaryQuery(query.Name) {
+			style = style.Italic(true)
 		}
 
 		// Wrap in bubblezone mark for clickability
-		content += zone.Mark(fmt.Sprintf("query_%d", i), queryText)
-
-		if i < len(m.queries)-1 {
-			content += " "
-		}
+		content += zone.Mark(fmt.Sprintf("query_%d", i), style.Render(" "+query.Name+" ")) + " "
 	}
 	return content
 }

@@ -9,7 +9,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	zone "github.com/lrstanley/bubblezone"
 )
 
@@ -444,10 +443,7 @@ func (m *Model) handleWindowSizeMsg(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) 
 	m.height = msg.Height
 
 	if !m.ready {
-		m.viewport = viewport.New(msg.Width, msg.Height)
-		m.viewport.Style = lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("62"))
+		m.viewport = viewport.New(msg.Width, max(1, msg.Height-1)) // the last line is the key-hint bar
 		m.ready = true
 
 		// Execute first query immediately when ready
@@ -460,7 +456,7 @@ func (m *Model) handleWindowSizeMsg(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) 
 		}
 	} else {
 		m.viewport.Width = msg.Width
-		m.viewport.Height = msg.Height
+		m.viewport.Height = max(1, msg.Height-1)
 	}
 
 	m.updateContent()
@@ -614,6 +610,10 @@ func (m *Model) handleActiveViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if av.Mode == ActiveModeList {
+		av.Notice = "" // the last action's result stays up until the next key
+	}
+
 	switch av.Mode {
 	case ActiveModeList:
 		switch msg.String() {
@@ -732,6 +732,11 @@ func (m *Model) executeTerminate(pid int, action string) tea.Cmd {
 func (m *Model) handleTerminateResult(msg terminateResultMsg) (tea.Model, tea.Cmd) {
 	if m.activeView != nil {
 		if msg.Success {
+			if msg.Action == "cancel" {
+				m.activeView.Notice = fmt.Sprintf("✓ cancelled the query on %d", msg.PID)
+			} else {
+				m.activeView.Notice = fmt.Sprintf("✓ terminated %d", msg.PID)
+			}
 			m.activeView.Mode = ActiveModeList
 			m.activeView.DetailProcess = nil
 			m.activeView.DetailCompleted = false

@@ -133,7 +133,7 @@ func TestRenderActiveListShowsLockColumn(t *testing.T) {
 	av := NewActiveView()
 	av.UpdateSelection(lockChain())
 	out := RenderActiveList(av, 200, 40)
-	for _, want := range []string{"blocks 3", "by 10", "3 blocked by 1 root blocker", "idle in xact", "5m"} {
+	for _, want := range []string{"blocks 3", "by 10", "3 blocked by 1 root blocker", "idle in tx", "5m"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("list output missing %q", want)
 		}
