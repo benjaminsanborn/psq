@@ -56,7 +56,12 @@ type Model struct {
 	stmtView          *StmtView          // Statements tab state and sample history; kept across tab switches
 	refreshInterval   time.Duration      // global auto-refresh interval, adjusted with +/-
 	paused            bool               // auto-refresh is paused; manual refreshes still run
+	target            *string            // "user@host:port/db" for the header, read once
 }
+
+// sparklinePoints is how much transactions/sec history Home keeps: enough to
+// fill the widget on a wide terminal
+const sparklinePoints = 240
 
 type Query struct {
 	Name          string `json:"name"`
@@ -83,7 +88,7 @@ func NewModel(service string) *Model {
 			err:           fmt.Sprintf("Failed to load queries: %v", err),
 			service:       service,
 			ready:         false,
-			sparklineData: NewSparklineData(60),
+			sparklineData: NewSparklineData(sparklinePoints),
 		}
 	}
 
@@ -115,7 +120,7 @@ func NewModel(service string) *Model {
 			editMode:        false,
 			help:            help.New(),
 			showHelp:        false,
-			sparklineData:   NewSparklineData(60),
+			sparklineData:   NewSparklineData(sparklinePoints),
 			lastCommits:     0,
 		}
 	}
@@ -135,7 +140,7 @@ func NewModel(service string) *Model {
 		editMode:        false,
 		help:            help.New(),
 		showHelp:        false,
-		sparklineData:   NewSparklineData(60), // Keep 60 data points (1 minute at 1 second intervals)
+		sparklineData:   NewSparklineData(sparklinePoints),
 		lastCommits:     0,
 	}
 }

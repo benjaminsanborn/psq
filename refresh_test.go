@@ -119,8 +119,8 @@ func TestHomeDataComputesRateOnMainGoroutine(t *testing.T) {
 	m.querySeq = 1
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	m.Update(homeDataMsg{seq: 1, data: homeData{barChart: "bars", commits: 100, commitsAt: start, commitsOK: true}})
-	m.Update(homeDataMsg{seq: 1, data: homeData{barChart: "bars", commits: 200, commitsAt: start.Add(2 * time.Second), commitsOK: true}})
+	m.Update(homeDataMsg{seq: 1, data: homeData{commits: 100, commitsAt: start, commitsOK: true}})
+	m.Update(homeDataMsg{seq: 1, data: homeData{commits: 200, commitsAt: start.Add(2 * time.Second), commitsOK: true}})
 
 	values := m.sparklineData.Values
 	if len(values) != 2 {

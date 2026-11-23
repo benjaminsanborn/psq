@@ -8,9 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NimbleMarkets/ntcharts/barchart"
-	"github.com/NimbleMarkets/ntcharts/sparkline"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/lib/pq"
 	zone "github.com/lrstanley/bubblezone"
 )
 
@@ -23,174 +22,81 @@ func HomeQuery() Query {
 	}
 }
 
-// RenderHomeChart renders the PostgreSQL activity state chart for the Home tab
-func RenderHomeChart(ctx context.Context, db *sql.DB, query string, chartWidth int) (string, error) {
-	rows, err := db.QueryContext(ctx, tagged(query))
-	if err != nil {
-		return "", fmt.Errorf("failed to execute query: %w", err)
-	}
-	defer rows.Close()
-
-	columns, err := rows.Columns()
-	if err != nil {
-		return "", fmt.Errorf("failed to get columns: %w", err)
-	}
-
-	var chartData []barchart.BarData
-	values := make([]interface{}, len(columns))
-	valuePtrs := make([]interface{}, len(columns))
-	for i := range values {
-		valuePtrs[i] = &values[i]
-	}
-
-	for rows.Next() {
-		if err := rows.Scan(valuePtrs...); err != nil {
-			return "", fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		var state string
-		var count float64
-
-		// Extract state (first column)
-		if values[0] == nil {
-			state = "NULL"
-		} else if bytes, ok := values[0].([]byte); ok {
-			state = string(bytes)
-		} else {
-			state = fmt.Sprintf("%v", values[0])
-		}
-
-		// Extract count (second column)
-		if values[1] == nil {
-			count = 0
-		} else if bytes, ok := values[1].([]byte); ok {
-			if parsed, err := strconv.ParseFloat(string(bytes), 64); err == nil {
-				count = parsed
-			}
-		} else if str, ok := values[1].(string); ok {
-			if parsed, err := strconv.ParseFloat(str, 64); err == nil {
-				count = parsed
-			}
-		} else if i64, ok := values[1].(int64); ok {
-			count = float64(i64)
-		} else if f64, ok := values[1].(float64); ok {
-			count = f64
-		}
-
-		// Choose colors based on state
-		var color lipgloss.Color
-		switch strings.ToLower(state) {
-		case "active":
-			color = lipgloss.Color("10") // Green
-		case "idle":
-			color = lipgloss.Color("8") // Gray
-		case "idle in transaction":
-			color = lipgloss.Color("11") // Yellow
-		case "idle in transaction (aborted)":
-			color = lipgloss.Color("9") // Red
-		default:
-			color = lipgloss.Color("12") // Blue
-		}
-
-		chartData = append(chartData, barchart.BarData{
-			Label: fmt.Sprintf("%s (%d)", state, int(count)),
-			Values: []barchart.BarValue{
-				{
-					Value: count,
-					Style: lipgloss.NewStyle().Foreground(color),
-				},
-			},
-		})
-	}
-
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("error iterating rows: %w", err)
-	}
-
-	if len(chartData) == 0 {
-		return "No data to display", nil
-	}
-
-	var axisStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("3")) // yellow
-
-	var labelStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("63")).
-		Align(lipgloss.Right)
-
-	// Calculate responsive chart dimensions
-	// Subtract padding and border space from the available width
-	responsiveWidth := chartWidth - 6 // Account for border and padding
-	if responsiveWidth < 20 {
-		responsiveWidth = 20 // Minimum width
-	}
-
-	// Create the bar chart with responsive width
-	bc := barchart.New(
-		responsiveWidth, 5,
-		barchart.WithDataSet(chartData),            // Your data
-		barchart.WithStyles(axisStyle, labelStyle), // Style axis & labels
-		barchart.WithHorizontalBars(),              // Horizontal bar layout
-	)
-
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("86")).
-		MarginBottom(1)
-
-	bc.Draw()
-
-	// Calculate total connections
-	totalConnectionsCount := 0
-	for _, bar := range chartData {
-		totalConnectionsCount += int(bar.Values[0].Value)
-	}
-	title := fmt.Sprintf("Connections (%d)", totalConnectionsCount)
-	result := titleStyle.Render(title) + "\n" + bc.View()
-
-	return result, nil
+// IsHomeTab checks if the given query is the Home tab
+func IsHomeTab(queryName string) bool {
+	return queryName == "Home"
 }
 
 // homeData is everything the Home dashboard reads from the database in one
-// refresh. Widgets that don't depend on model state are rendered in the
-// fetching goroutine; the commit counter is returned raw so the main
-// goroutine can turn it into a rate against its own history.
+// refresh. It's plain data: the main goroutine turns the commit counter into
+// a rate against its own history and renders the widgets at the current
+// terminal width.
 type homeData struct {
-	barChart       string
-	commits        float64
-	commitsAt      time.Time
-	commitsOK      bool
-	cacheHitRatio  string
-	replicationLag string
-	blockingLocks  string
+	states         map[string]int // session count by pg_stat_activity state
+	maxConnections int
+
+	commits   float64
+	commitsAt time.Time
+	commitsOK bool
+
+	cache cacheInfo
+	repl  replInfo
+	block blockInfo
+	xact  xactInfo
 }
 
 // fetchHomeData runs the Home dashboard queries. It must not touch the Model.
-func fetchHomeData(ctx context.Context, db *sql.DB, query string, chartWidth int) (homeData, error) {
-	barChart, err := RenderHomeChart(ctx, db, query, chartWidth)
+func fetchHomeData(ctx context.Context, db *sql.DB, query string) (homeData, error) {
+	states, err := getStateCounts(ctx, db, query)
 	if err != nil {
 		return homeData{}, err
 	}
-	data := homeData{barChart: barChart}
+	data := homeData{states: states}
 
-	if commits, at, err := GetTransactionCommits(ctx, db); err == nil {
-		data.commits, data.commitsAt, data.commitsOK = commits, at, true
+	if commits, at, maxConn, err := GetTransactionCommits(ctx, db); err == nil {
+		data.commits, data.commitsAt, data.maxConnections, data.commitsOK = commits, at, maxConn, true
 	} else {
 		// Without commit stats the rest of the dashboard isn't rendered
 		return data, nil
 	}
 
-	data.cacheHitRatio = RenderCacheHitRatio(ctx, db)
-	data.replicationLag = RenderReplicationLag(ctx, db)
-	data.blockingLocks = RenderBlockingLocks(ctx, db)
+	data.cache = getCacheInfo(ctx, db)
+	data.repl = getReplInfo(ctx, db)
+	data.block = getBlockInfo(ctx, db)
+	data.xact = getLongestXact(ctx, db)
 	return data, nil
+}
+
+// getStateCounts runs the Home query: one row per state with its count
+func getStateCounts(ctx context.Context, db *sql.DB, query string) (map[string]int, error) {
+	rows, err := db.QueryContext(ctx, tagged(query))
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	states := map[string]int{}
+	for rows.Next() {
+		var state sql.NullString
+		var count sql.NullString
+		if err := rows.Scan(&state, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+		n, _ := strconv.ParseFloat(count.String, 64)
+		states[state.String] += int(n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating rows: %w", err)
+	}
+	return states, nil
 }
 
 // renderHome folds a Home refresh into the commit-rate history and renders
 // the dashboard. Call it only from the main goroutine.
 func (m *Model) renderHome(data homeData) string {
 	if !data.commitsOK {
-		return data.barChart
+		colW := homeColumnWidth(m.width)
+		return " " + titledBox("Connections", connectionsBody(data, colW-4), colW, 5, styleDim)
 	}
 
 	// Commits per second, using DB timestamps for accurate elapsed time
@@ -204,86 +110,162 @@ func (m *Model) renderHome(data homeData) string {
 	m.lastCommitTime = data.commitsAt
 	m.sparklineData.AddPoint(commitsPerSec, data.commitsAt)
 
-	sparklineChart := RenderSparklineChart(m.sparklineData, GetChartWidth(m.width))
-	return RenderHomeDashboard(data.barChart, sparklineChart, data.cacheHitRatio, data.replicationLag, data.blockingLocks, m.width)
+	return RenderHomeDashboard(data, m.sparklineData, m.width)
 }
 
-// IsHomeTab checks if the given query is the Home tab
-func IsHomeTab(queryName string) bool {
-	return queryName == "Home"
+// homeColumnWidth is the outer width of each of the two widget columns
+func homeColumnWidth(width int) int {
+	return max(30, (width-3)/2)
 }
 
-// SparklineData holds the transaction commit data over time
-type SparklineData struct {
-	Values     []float64
-	Timestamps []time.Time
-	MaxPoints  int
+// RenderHomeDashboard lays the widgets out in two columns:
+//
+//	Connections      Transactions/sec
+//	Cache hit ratio  Replication
+//	Blocked queries  Longest transaction
+func RenderHomeDashboard(data homeData, tps *SparklineData, width int) string {
+	colW := homeColumnWidth(width)
+	inner := colW - 4
+	blocked := data.block.waiting > 0
+
+	blockBorder := styleDim
+	if blocked {
+		blockBorder = styleRed
+	}
+	tpsStyle := styleBlue
+	if blocked {
+		tpsStyle = styleYellow // throughput under a pile-up is worth a second look
+	}
+
+	rows := [][2]string{
+		{
+			titledBox("Connections", connectionsBody(data, inner), colW, 5, styleDim),
+			titledBox("Transactions/sec", tpsBody(tps, inner, tpsStyle), colW, 5, styleDim),
+		},
+		{
+			titledBox("Cache hit ratio", cacheBody(data.cache, inner), colW, 4, styleDim),
+			titledBox("Replication", replBody(data.repl, inner), colW, 4, styleDim),
+		},
+		{
+			zone.Mark(homeBlockingZone, titledBox("Blocked queries", blockedBody(data.block, inner), colW, 4, blockBorder)),
+			titledBox("Longest transaction", xactBody(data.xact, inner), colW, 4, styleDim),
+		},
+	}
+
+	var out []string
+	for _, r := range rows {
+		out = append(out, lipgloss.JoinHorizontal(lipgloss.Top, " ", r[0], "  ", r[1]))
+	}
+	return strings.Join(out, "\n")
 }
 
-// NewSparklineData creates a new sparkline data structure
-func NewSparklineData(maxPoints int) *SparklineData {
-	return &SparklineData{
-		Values:     make([]float64, 0, maxPoints),
-		Timestamps: make([]time.Time, 0, maxPoints),
-		MaxPoints:  maxPoints,
-	}
+// homeBlockingZone is the clickable area of the Home blocked-queries widget
+const homeBlockingZone = "home_blocking"
+
+// label renders "name value" with the name dimmed
+func label(name, value string, style lipgloss.Style) string {
+	return styleDim.Render(name+" ") + style.Render(value)
 }
 
-// AddPoint adds a new data point to the sparkline
-func (s *SparklineData) AddPoint(value float64, timestamp time.Time) {
-	s.Values = append(s.Values, value)
-	s.Timestamps = append(s.Timestamps, timestamp)
-
-	// Keep only the last MaxPoints
-	if len(s.Values) > s.MaxPoints {
-		s.Values = s.Values[1:]
-		s.Timestamps = s.Timestamps[1:]
+func connectionsBody(data homeData, inner int) string {
+	total := 0
+	for _, n := range data.states {
+		total += n
 	}
+	active := data.states["active"]
+	idle := data.states["idle"]
+	idleTx := data.states["idle in transaction"] + data.states["idle in transaction (aborted)"]
+
+	var lines []string
+	if data.maxConnections > 0 {
+		count := fmt.Sprintf(" %d / %d", total, data.maxConnections)
+		frac := float64(total) / float64(data.maxConnections)
+		fill := styleBlue
+		switch {
+		case frac >= 0.9:
+			fill = styleRed
+		case frac >= 0.7:
+			fill = styleYellow
+		}
+		lines = append(lines, gauge(frac, inner-len(count), fill)+count)
+	} else {
+		lines = append(lines, styleBold.Render(strconv.Itoa(total))+styleDim.Render(" sessions"))
+	}
+
+	idleTxStyle := styleFg
+	if idleTx > 0 {
+		idleTxStyle = styleYellow
+	}
+	lines = append(lines, label("active", strconv.Itoa(active), styleFg)+"  "+
+		label("idle", strconv.Itoa(idle), styleFg)+"  "+
+		label("idle in tx", strconv.Itoa(idleTx), idleTxStyle))
+
+	waitStyle := styleFg
+	if data.block.waiting > 0 {
+		waitStyle = styleRed.Bold(true)
+	}
+	lines = append(lines, label("waiting on a lock", strconv.Itoa(data.block.waiting), waitStyle))
+	return strings.Join(lines, "\n")
 }
 
-// GetTransactionCommits queries the database for transaction commits and the current timestamp
-func GetTransactionCommits(ctx context.Context, db *sql.DB) (float64, time.Time, error) {
-	var commits float64
-	var now time.Time
-	err := db.QueryRowContext(ctx, tagged("SELECT SUM(xact_commit), NOW() FROM pg_stat_database")).Scan(&commits, &now)
-	if err != nil {
-		return 0, time.Time{}, fmt.Errorf("failed to query transaction commits: %w", err)
+func tpsBody(tps *SparklineData, inner int, style lipgloss.Style) string {
+	if len(tps.Values) < 2 {
+		return styleDim.Render("collecting…")
 	}
-	return commits, now, nil
+	// The first point has no previous sample to diff against
+	values := tps.Values[1:]
+
+	lo, hi, sum := values[0], values[0], 0.0
+	for _, v := range values {
+		lo, hi, sum = min(lo, v), max(hi, v), sum+v
+	}
+	// Leave some floor under the lowest bar so small swings still read as swings
+	lo = max(0, lo-(hi-lo))
+	if hi-lo < 1 {
+		hi = lo + 1
+	}
+	top, bottom := sparkline(values, inner, lo, hi, style)
+	now := values[len(values)-1]
+	avg := sum / float64(len(values))
+	return top + "\n" + bottom + "\n" +
+		label("now", formatRate(now)+"/s", styleBold) + "   " + label("avg", formatRate(avg)+"/s", styleFg)
 }
 
-// RenderSparklineChart renders the transaction commits sparkline
-func RenderSparklineChart(sparklineData *SparklineData, chartWidth int) string {
-	if len(sparklineData.Values) == 0 {
-		return "No data yet..."
+// formatRate renders a per-second rate: 0.4, 12, 1,284
+func formatRate(v float64) string {
+	if v < 10 {
+		return strconv.FormatFloat(v, 'f', 1, 64)
 	}
-
-	// Get the latest value (current transactions per second)
-	currentTPS := sparklineData.Values[len(sparklineData.Values)-1]
-
-	// Calculate responsive sparkline dimensions
-	// Subtract padding and border space from the available width
-	responsiveWidth := chartWidth - 6 // Account for border and padding
-	if responsiveWidth < 20 {
-		responsiveWidth = 20 // Minimum width
+	s := strconv.FormatInt(int64(v+0.5), 10)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
 	}
+	return s
+}
 
-	// Create sparkline chart with responsive width
-	sl := sparkline.New(responsiveWidth, 5)
-	for _, value := range sparklineData.Values {
-		sl.Push(value)
+// ---- Cache hit ratio -----------------------------------------------------
+
+type cacheInfo struct {
+	ratio, heap, index       float64
+	ratioOK, heapOK, indexOK bool
+}
+
+func getCacheInfo(ctx context.Context, db *sql.DB) cacheInfo {
+	var info cacheInfo
+	if ratio, ok, err := GetCacheHitRatio(ctx, db); err == nil && ok {
+		info.ratio, info.ratioOK = ratio, true
 	}
-	sl.Draw()
-
-	// Add title with current TPS count
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("86")).
-		MarginBottom(1)
-
-	title := fmt.Sprintf("Transactions/sec (%.1f)", currentTPS)
-	result := titleStyle.Render(title) + "\n" + sl.View()
-	return result
+	var heap, index sql.NullFloat64
+	err := db.QueryRowContext(ctx, tagged(`
+		SELECT
+			ROUND(SUM(heap_blks_hit) * 100.0 / NULLIF(SUM(heap_blks_hit) + SUM(heap_blks_read), 0), 2),
+			ROUND(SUM(idx_blks_hit) * 100.0 / NULLIF(SUM(idx_blks_hit) + SUM(idx_blks_read), 0), 2)
+		FROM pg_statio_user_tables`)).Scan(&heap, &index)
+	if err == nil {
+		info.heap, info.heapOK = heap.Float64, heap.Valid
+		info.index, info.indexOK = index.Float64, index.Valid
+	}
+	return info
 }
 
 // GetCacheHitRatio queries the database for cache hit ratio percentage
@@ -297,6 +279,88 @@ func GetCacheHitRatio(ctx context.Context, db *sql.DB) (float64, bool, error) {
 		return 0, false, nil
 	}
 	return ratio.Float64, true, nil
+}
+
+// ratioStyle colours a hit ratio: green from 99%, yellow from 95%, else red
+func ratioStyle(ratio float64) lipgloss.Style {
+	switch {
+	case ratio >= 99:
+		return styleGreen
+	case ratio >= 95:
+		return styleYellow
+	}
+	return styleRed
+}
+
+func cacheBody(c cacheInfo, inner int) string {
+	if !c.ratioOK {
+		return styleDim.Render("N/A")
+	}
+	style := ratioStyle(c.ratio)
+	value := fmt.Sprintf("%.2f%%", c.ratio)
+	line := style.Bold(true).Render(value) + "  " + gauge(c.ratio/100, inner-len(value)-2, style)
+
+	var parts []string
+	if c.heapOK {
+		parts = append(parts, fmt.Sprintf("heap %.1f%%", c.heap))
+	}
+	if c.indexOK {
+		parts = append(parts, fmt.Sprintf("index %.1f%%", c.index))
+	}
+	detail := "no table stats yet"
+	if len(parts) > 0 {
+		detail = strings.Join(parts, "  ")
+	}
+	return line + "\n" + styleDim.Render(detail)
+}
+
+// ---- Replication ---------------------------------------------------------
+
+// replica is one standby streaming from this server
+type replica struct {
+	name  string
+	state string
+	lag   float64
+	lagOK bool
+}
+
+type replInfo struct {
+	slots    ReplicationLagInfo // recovery state, and slot lag on a primary
+	replicas []replica          // from pg_stat_replication, on a primary
+	err      string
+}
+
+func getReplInfo(ctx context.Context, db *sql.DB) replInfo {
+	slots, err := GetReplicationLag(ctx, db)
+	if err != nil {
+		return replInfo{err: err.Error()}
+	}
+	info := replInfo{slots: slots}
+	if slots.IsReplica {
+		return info
+	}
+
+	rows, err := db.QueryContext(ctx, tagged(`
+		SELECT
+			COALESCE(NULLIF(application_name, ''), client_addr::text, 'replica'),
+			COALESCE(state, ''),
+			EXTRACT(EPOCH FROM replay_lag)::float8
+		FROM pg_stat_replication
+		ORDER BY 1`))
+	if err != nil {
+		return info // no permission: fall back to the slot summary
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r replica
+		var lag sql.NullFloat64
+		if err := rows.Scan(&r.name, &r.state, &lag); err != nil {
+			continue
+		}
+		r.lag, r.lagOK = lag.Float64, lag.Valid
+		info.replicas = append(info.replicas, r)
+	}
+	return info
 }
 
 // ReplicationLagInfo holds replication lag details
@@ -393,37 +457,262 @@ func GetReplicationLag(ctx context.Context, db *sql.DB) (ReplicationLagInfo, err
 	return info, nil
 }
 
-// RenderCacheHitRatio renders the cache hit ratio widget
-func RenderCacheHitRatio(ctx context.Context, db *sql.DB) string {
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("86")).
-		MarginBottom(1)
-
-	ratio, valid, err := GetCacheHitRatio(ctx, db)
-	if err != nil || !valid {
-		return titleStyle.Render("Cache Hit Ratio") + "\n" +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("N/A")
-	}
-
-	var color lipgloss.Color
+// lagStyle colours a replay lag in seconds: green under 1s, yellow to 10s
+func lagStyle(sec float64) lipgloss.Style {
 	switch {
-	case ratio >= 99:
-		color = lipgloss.Color("10") // Green
-	case ratio >= 95:
-		color = lipgloss.Color("11") // Yellow
-	default:
-		color = lipgloss.Color("9") // Red
+	case sec < 1:
+		return styleGreen
+	case sec <= 10:
+		return styleYellow
+	}
+	return styleRed
+}
+
+// formatLag renders a replay lag: 0.2s, 14s, 3m 5s
+func formatLag(sec float64) string {
+	if sec < 10 {
+		return strconv.FormatFloat(sec, 'f', 1, 64) + "s"
+	}
+	return formatDuration(int(sec))
+}
+
+func replBody(r replInfo, inner int) string {
+	if r.err != "" {
+		return styleDim.Render(truncate("unavailable: "+r.err, inner))
+	}
+	s := r.slots
+	if s.IsReplica {
+		if !s.Valid {
+			return styleDim.Render("this server is a replica") + "\n" + styleDim.Render("replay lag N/A")
+		}
+		return styleDim.Render("this server is a replica") + "\n" +
+			label("replay lag", formatLag(float64(s.LagSeconds)), lagStyle(float64(s.LagSeconds)).Bold(true))
 	}
 
-	valueStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(color).
-		PaddingTop(1)
+	if len(r.replicas) > 0 {
+		var lines []string
+		nameW := max(8, inner-20)
+		for i, rep := range r.replicas {
+			if i == 1 && len(r.replicas) > 2 {
+				lines = append(lines, styleDim.Render(fmt.Sprintf("+%d more replicas", len(r.replicas)-1)))
+				break
+			}
+			lag, style := "–", styleDim
+			if rep.lagOK {
+				lag, style = formatLag(rep.lag), lagStyle(rep.lag).Bold(true)
+			}
+			stateStyle := styleGreen
+			if rep.state != "streaming" {
+				stateStyle = styleYellow
+			}
+			lines = append(lines, fitWidth(rep.name, nameW)+" "+style.Render(fmt.Sprintf("%6s", lag))+"  "+stateStyle.Render(rep.state))
+		}
+		return strings.Join(lines, "\n")
+	}
 
-	return titleStyle.Render("Cache Hit Ratio") + "\n" +
-		valueStyle.Render(fmt.Sprintf("%.2f%%", ratio))
+	if s.TotalSlots == 0 {
+		return styleDim.Render("no replicas or slots")
+	}
+
+	summary := fmt.Sprintf("%d slots", s.TotalSlots)
+	var parts []string
+	if s.StreamingSlots > 0 {
+		parts = append(parts, fmt.Sprintf("%d streaming", s.StreamingSlots))
+	}
+	if s.LogicalSlots > 0 {
+		parts = append(parts, fmt.Sprintf("%d logical", s.LogicalSlots))
+	}
+	if len(parts) > 0 {
+		summary += " (" + strings.Join(parts, ", ") + ")"
+	}
+	if !s.Valid {
+		return styleDim.Render(summary) + "\n" + styleDim.Render("no lag data")
+	}
+
+	// LagSeconds holds bytes of WAL for a primary's slots
+	style := styleGreen
+	switch {
+	case s.LagSeconds >= 100<<20:
+		style = styleRed
+	case s.LagSeconds >= 1<<20:
+		style = styleYellow
+	}
+	return styleDim.Render(summary) + "\n" +
+		style.Bold(true).Render(formatBytes(s.LagSeconds)+" behind") + styleDim.Render(" · "+s.SlotType+" · "+s.SlotName)
 }
+
+// ---- Blocked queries -----------------------------------------------------
+
+type blockInfo struct {
+	waiting        int // sessions waiting on a lock held by another session
+	longestWaitSec int
+	roots          []int // root blockers: holding the locks, not waiting themselves
+	err            string
+}
+
+// blockInfoSQL counts sessions waiting on locks and finds the root blockers.
+// pg_blocking_pids only runs for sessions actually waiting on a lock, as on
+// the Active tab.
+const blockInfoSQL = `
+	WITH w AS (
+		SELECT pid, pg_blocking_pids(pid) AS blocked_by, state_change
+		FROM pg_stat_activity
+		WHERE wait_event_type = 'Lock'
+	), waiting AS (
+		SELECT * FROM w WHERE cardinality(blocked_by) > 0
+	)
+	SELECT
+		(SELECT COUNT(*) FROM waiting),
+		COALESCE((SELECT MAX(EXTRACT(EPOCH FROM (now() - state_change)))::int FROM waiting), 0),
+		COALESCE((
+			SELECT array_agg(DISTINCT b ORDER BY b)
+			FROM waiting, unnest(blocked_by) AS b
+			WHERE b NOT IN (SELECT pid FROM waiting)
+		), '{}'::int[])`
+
+func getBlockInfo(ctx context.Context, db *sql.DB) blockInfo {
+	var info blockInfo
+	var roots []int64
+	err := db.QueryRowContext(ctx, tagged(blockInfoSQL)).Scan(&info.waiting, &info.longestWaitSec, pq.Array(&roots))
+	if err != nil {
+		return blockInfo{err: err.Error()}
+	}
+	for _, pid := range roots {
+		info.roots = append(info.roots, int(pid))
+	}
+	return info
+}
+
+func blockedBody(b blockInfo, inner int) string {
+	if b.err != "" {
+		return styleDim.Render(truncate("unavailable: "+b.err, inner))
+	}
+	if b.waiting == 0 {
+		return styleGreen.Bold(true).Render("0") + styleGreen.Render(" all clear")
+	}
+
+	var on string
+	switch len(b.roots) {
+	case 0:
+		on = " waiting on each other" // a lock cycle the deadlock detector hasn't broken yet
+	case 1:
+		on = fmt.Sprintf(" waiting on pid %d", b.roots[0])
+	default:
+		on = fmt.Sprintf(" waiting on %d sessions", len(b.roots))
+	}
+	waitStyle := styleYellow
+	switch {
+	case b.longestWaitSec >= 30:
+		waitStyle = styleRed
+	case b.longestWaitSec >= 5:
+		waitStyle = lipgloss.NewStyle().Foreground(colorOrange)
+	}
+	return styleRed.Bold(true).Render(strconv.Itoa(b.waiting)) + styleRed.Render(on) + "\n" +
+		label("longest", formatDuration(b.longestWaitSec), waitStyle.Bold(true)) +
+		styleDim.Render(" · press ") + styleKey.Render("b") + styleDim.Render(" for the lock tree")
+}
+
+// ---- Longest transaction -------------------------------------------------
+
+type xactInfo struct {
+	pid   int
+	user  string
+	state string
+	sec   float64
+	ok    bool
+	err   string
+}
+
+// getLongestXact finds the oldest open transaction among client sessions,
+// leaving out psq's own
+func getLongestXact(ctx context.Context, db *sql.DB) xactInfo {
+	var x xactInfo
+	err := db.QueryRowContext(ctx, tagged(`
+		SELECT pid, COALESCE(usename, ''), COALESCE(state, ''),
+			EXTRACT(EPOCH FROM (now() - xact_start))::float8
+		FROM pg_stat_activity
+		WHERE xact_start IS NOT NULL
+		  AND pid <> pg_backend_pid()
+		  AND backend_type = 'client backend'
+		  AND application_name <> 'psq'
+		ORDER BY xact_start
+		LIMIT 1`)).Scan(&x.pid, &x.user, &x.state, &x.sec)
+	switch {
+	case err == sql.ErrNoRows:
+		return xactInfo{}
+	case err != nil:
+		return xactInfo{err: err.Error()}
+	}
+	x.ok = true
+	return x
+}
+
+func xactBody(x xactInfo, inner int) string {
+	if x.err != "" {
+		return styleDim.Render(truncate("unavailable: "+x.err, inner))
+	}
+	if !x.ok {
+		return styleDim.Render("no open transactions")
+	}
+	style := styleFg
+	switch {
+	case x.sec >= 300:
+		style = styleRed
+	case x.sec >= 60 || strings.HasPrefix(x.state, "idle in transaction"):
+		style = styleYellow
+	}
+	state := x.state
+	if state == "" {
+		state = "unknown state"
+	}
+	return style.Bold(true).Render(formatSeconds(x.sec)) + "  " + truncate(fmt.Sprintf("pid %d · %s", x.pid, x.user), inner-12) + "\n" +
+		stateStyle(x.state).Render(state)
+}
+
+// ---- Transactions/sec ----------------------------------------------------
+
+// SparklineData holds the transaction commit data over time
+type SparklineData struct {
+	Values     []float64
+	Timestamps []time.Time
+	MaxPoints  int
+}
+
+// NewSparklineData creates a new sparkline data structure
+func NewSparklineData(maxPoints int) *SparklineData {
+	return &SparklineData{
+		Values:     make([]float64, 0, maxPoints),
+		Timestamps: make([]time.Time, 0, maxPoints),
+		MaxPoints:  maxPoints,
+	}
+}
+
+// AddPoint adds a new data point to the sparkline
+func (s *SparklineData) AddPoint(value float64, timestamp time.Time) {
+	s.Values = append(s.Values, value)
+	s.Timestamps = append(s.Timestamps, timestamp)
+
+	// Keep only the last MaxPoints
+	if len(s.Values) > s.MaxPoints {
+		s.Values = s.Values[1:]
+		s.Timestamps = s.Timestamps[1:]
+	}
+}
+
+// GetTransactionCommits queries the database for transaction commits, the
+// current timestamp and max_connections
+func GetTransactionCommits(ctx context.Context, db *sql.DB) (float64, time.Time, int, error) {
+	var commits float64
+	var now time.Time
+	var maxConn int
+	err := db.QueryRowContext(ctx, tagged("SELECT SUM(xact_commit), NOW(), current_setting('max_connections')::int FROM pg_stat_database")).Scan(&commits, &now, &maxConn)
+	if err != nil {
+		return 0, time.Time{}, 0, fmt.Errorf("failed to query transaction commits: %w", err)
+	}
+	return commits, now, maxConn, nil
+}
+
+// ---- Formatting ----------------------------------------------------------
 
 // formatBytes formats byte counts into human-readable form
 func formatBytes(bytes int) string {
@@ -459,264 +748,3 @@ func formatDuration(seconds int) string {
 	}
 	return fmt.Sprintf("%dh %dm", hours, mins)
 }
-
-// RenderReplicationLag renders the replication lag widget
-func RenderReplicationLag(ctx context.Context, db *sql.DB) string {
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("86")).
-		MarginBottom(1)
-
-	dimStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("8"))
-
-	info, err := GetReplicationLag(ctx, db)
-	if err != nil {
-		return titleStyle.Render("Replication") + "\n" + dimStyle.Render("error")
-	}
-
-	if info.IsReplica {
-		// Replica mode: show replay lag in seconds
-		if !info.Valid {
-			return titleStyle.Render("Replica Lag") + "\n" + dimStyle.Render("N/A")
-		}
-		var color lipgloss.Color
-		switch {
-		case info.LagSeconds < 1:
-			color = lipgloss.Color("10") // Green
-		case info.LagSeconds <= 10:
-			color = lipgloss.Color("11") // Yellow
-		default:
-			color = lipgloss.Color("9") // Red
-		}
-		valueStyle := lipgloss.NewStyle().Bold(true).Foreground(color).PaddingTop(1)
-		return titleStyle.Render("Replica Lag") + "\n" +
-			valueStyle.Render(fmt.Sprintf("%ds", info.LagSeconds))
-	}
-
-	// Primary mode
-	if info.TotalSlots == 0 {
-		return titleStyle.Render("Replication Slots") + "\n" + dimStyle.Render("none")
-	}
-
-	// Slot count summary
-	slotSummary := fmt.Sprintf("%d slots", info.TotalSlots)
-	parts := []string{}
-	if info.StreamingSlots > 0 {
-		parts = append(parts, fmt.Sprintf("%d streaming", info.StreamingSlots))
-	}
-	if info.LogicalSlots > 0 {
-		parts = append(parts, fmt.Sprintf("%d logical", info.LogicalSlots))
-	}
-	if len(parts) > 0 {
-		slotSummary += " (" + strings.Join(parts, ", ") + ")"
-	}
-
-	if !info.Valid {
-		return titleStyle.Render("Replication Slots") + "\n" +
-			dimStyle.Render(slotSummary) + "\n" +
-			dimStyle.Render("no lag data")
-	}
-
-	// Color by WAL lag severity
-	lagStr := formatBytes(info.LagSeconds) // LagSeconds holds bytes for primary
-	var color lipgloss.Color
-	switch {
-	case info.LagSeconds < 1<<20: // < 1 MB
-		color = lipgloss.Color("10") // Green
-	case info.LagSeconds < 100<<20: // < 100 MB
-		color = lipgloss.Color("11") // Yellow
-	default:
-		color = lipgloss.Color("9") // Red
-	}
-
-	valueStyle := lipgloss.NewStyle().Bold(true).Foreground(color)
-	detailStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-
-	return titleStyle.Render("Replication Slots") + "\n" +
-		dimStyle.Render(slotSummary) + "\n" +
-		valueStyle.Render(lagStr+" behind") +
-		detailStyle.Render(" · "+info.SlotType+" · "+info.SlotName)
-}
-
-// RenderHomeDashboard renders all widgets: 2x2 grid + full-width blocking locks
-func RenderHomeDashboard(barChart, sparklineChart, cacheHitRatio, replicationLag, blockingLocks string, width int) string {
-	halfWidth := GetChartWidth(width)
-	borderColor := lipgloss.Color("62")
-
-	leftStyle := lipgloss.NewStyle().
-		Width(halfWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
-		Padding(0, 1).
-		MarginRight(2)
-
-	rightStyle := lipgloss.NewStyle().
-		Width(halfWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
-		Padding(0, 1)
-
-	// Bottom widgets: shorter height for single-value displays
-	bottomLeftStyle := leftStyle.Height(5)
-	bottomRightStyle := rightStyle.Height(5)
-
-	topRow := lipgloss.JoinHorizontal(lipgloss.Top,
-		leftStyle.Render(barChart),
-		rightStyle.Render(sparklineChart),
-	)
-
-	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top,
-		bottomLeftStyle.Render(cacheHitRatio),
-		bottomRightStyle.Render(replicationLag),
-	)
-
-	// Full-width blocking locks widget at the top
-	fullWidthStyle := lipgloss.NewStyle().
-		Width(width-4).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
-		Padding(0, 1)
-
-	blockingLocksRow := fullWidthStyle.Render(blockingLocks)
-
-	return lipgloss.JoinVertical(lipgloss.Left, blockingLocksRow, topRow, bottomRow)
-}
-
-// RenderHomeSideBySide renders both charts in side-by-side blocks (legacy, unused)
-func RenderHomeSideBySide(barChart, sparklineChart string, width int) string {
-	halfWidth := GetChartWidth(width)
-
-	leftStyle := lipgloss.NewStyle().
-		Width(halfWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
-		MarginRight(2)
-
-	rightStyle := lipgloss.NewStyle().
-		Width(halfWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62"))
-
-	return lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		leftStyle.Render(barChart),
-		rightStyle.Render(sparklineChart),
-	)
-}
-
-// RenderHomeWithTable renders charts and table in a vertical layout
-func RenderHomeWithTable(barChart, sparklineChart, activeTable string, width int) string {
-	// Render charts side by side
-	chartsLayout := RenderHomeSideBySide(barChart, sparklineChart, width)
-
-	// Create table style that spans full width
-	tableStyle := lipgloss.NewStyle().
-		Width(width - 4).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
-		Padding(1)
-
-	// Combine charts and table vertically
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		chartsLayout,
-		tableStyle.Render(activeTable),
-	)
-}
-
-// GetChartWidth calculates the width available for each chart
-func GetChartWidth(totalWidth int) int {
-	return (totalWidth - 8) / 2 // Half width minus padding
-}
-
-// BlockingLockInfo holds a summary count of blocked queries
-type BlockingLockInfo struct {
-	Valid          bool
-	BlockedCount   int
-	LongestWaitSec int
-}
-
-// GetBlockingLockInfo queries for the count of blocked queries and max wait time
-func GetBlockingLockInfo(ctx context.Context, db *sql.DB) (BlockingLockInfo, error) {
-	sqlQuery := `
-		SELECT
-			COUNT(DISTINCT l.pid) AS blocked_count,
-			COALESCE(MAX(EXTRACT(EPOCH FROM (NOW() - a.state_change))::int), 0) AS longest_wait_sec
-		FROM pg_locks l
-		JOIN pg_stat_activity a ON l.pid = a.pid
-		WHERE NOT l.granted`
-
-	var info BlockingLockInfo
-	var blockedCount, longestWait sql.NullInt64
-
-	err := db.QueryRowContext(ctx, tagged(sqlQuery)).Scan(&blockedCount, &longestWait)
-	if err != nil {
-		return BlockingLockInfo{}, fmt.Errorf("failed to query blocking locks: %w", err)
-	}
-
-	if !blockedCount.Valid || blockedCount.Int64 == 0 {
-		return BlockingLockInfo{Valid: false}, nil
-	}
-
-	info.Valid = true
-	info.BlockedCount = int(blockedCount.Int64)
-	if longestWait.Valid {
-		info.LongestWaitSec = int(longestWait.Int64)
-	}
-
-	return info, nil
-}
-
-// RenderBlockingLocks renders the blocking locks widget (full width)
-func RenderBlockingLocks(ctx context.Context, db *sql.DB) string {
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("86"))
-
-	errorStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("9"))
-
-	info, err := GetBlockingLockInfo(ctx, db)
-	if err != nil {
-		return titleStyle.Render("Blocking Locks") + "\n" +
-			errorStyle.Render(fmt.Sprintf("Error: %v", err))
-	}
-
-	if !info.Valid {
-		okStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("10")).
-			PaddingTop(1)
-		return titleStyle.Render("Blocked Queries") + "\n" +
-			okStyle.Render("✓ No blocked queries")
-	}
-
-	var waitColor lipgloss.Color
-	switch {
-	case info.LongestWaitSec < 5:
-		waitColor = lipgloss.Color("11") // Yellow - short wait
-	case info.LongestWaitSec < 30:
-		waitColor = lipgloss.Color("208") // Orange - concerning
-	default:
-		waitColor = lipgloss.Color("9") // Red - critical
-	}
-
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("9")).
-		PaddingTop(1)
-
-	waitStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(waitColor)
-
-	waitStr := formatDuration(info.LongestWaitSec)
-	header := fmt.Sprintf("⚠ %d blocked queries  •  Max wait: %s", info.BlockedCount, waitStyle.Render(waitStr))
-
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("   press b (or click) for the lock tree")
-	return zone.Mark(homeBlockingZone, titleStyle.Render("Blocked Queries")+"\n"+
-		headerStyle.Render(header)+hint)
-}
-
-// homeBlockingZone is the clickable area of the Home blocked-queries widget
-const homeBlockingZone = "home_blocking"

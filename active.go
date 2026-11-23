@@ -96,6 +96,7 @@ type ActiveView struct {
 	DetailProcess   *ActiveProcess // snapshot of the process when entering detail/confirm mode
 	DetailCompleted bool           // true when the detail PID is no longer in pg_stat_activity
 	CopyStatus      string         // brief feedback after clipboard copy ("Copied!" or error)
+	Notice          string         // result of the last terminate/cancel, cleared by the next key
 }
 
 // ActiveQuery returns the hardcoded Active query (used for tab display; actual data fetched structurally)
@@ -457,6 +458,9 @@ func (av *ActiveView) pageSize(height int) int {
 	ps := height - 12
 	if ps < 5 {
 		ps = 5
+	}
+	if av.TreeMode {
+		ps = max(3, ps/2) // each lock-tree entry takes two lines
 	}
 	return ps
 }

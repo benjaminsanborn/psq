@@ -29,6 +29,7 @@ type PickerModel struct {
 	ready           bool
 	err             string
 	selectedService string
+	targets         map[string]string // service -> "host:port/db", read when the list loads
 	help            help.Model
 	showHelp        bool
 }
@@ -63,6 +64,10 @@ func (m *PickerModel) Init() tea.Cmd {
 
 func (m *PickerModel) setServices(services []string) {
 	m.services = services
+	m.targets = make(map[string]string, len(services))
+	for _, s := range services {
+		m.targets[s] = serviceTarget(s)
+	}
 	m.applyFilter()
 }
 
@@ -167,14 +172,11 @@ func (m *PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 		if !m.ready {
-			m.viewport = viewport.New(msg.Width, msg.Height)
-			m.viewport.Style = lipgloss.NewStyle().
-				BorderStyle(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("62"))
+			m.viewport = viewport.New(msg.Width, max(1, msg.Height-1)) // the last line is the key-hint bar
 			m.ready = true
 		} else {
 			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height
+			m.viewport.Height = max(1, msg.Height-1)
 		}
 
 		m.updateContent()
@@ -233,65 +235,89 @@ func (m *PickerModel) editConfig() tea.Cmd {
 }
 
 func (m *PickerModel) updateContent() {
-	var content string
+	var b strings.Builder
 
-	// Header
-	content += lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("86")).
-		Padding(0, 1).
-		Render("psq - Service Picker")
-	content += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Press ? for help")
-	content += "\n\n"
+	b.WriteString("\n  " + styleBlue.Bold(true).Render("psq") + "  " + styleDim.Render("pick a service from ~/.pg_service.conf") + "\n\n")
 
 	// Show help if requested
 	if m.showHelp {
-		content += m.customHelpView()
-		m.viewport.SetContent(content)
+		b.WriteString(m.customHelpView())
+		m.viewport.SetContent(b.String())
 		return
 	}
 
 	switch {
 	case m.filtering:
-		content += "Filter: " + m.filter + "█\n"
+		b.WriteString("  " + styleBlue.Render("/ ") + m.filter + "█\n")
 	case m.filter != "":
-		content += fmt.Sprintf("Filter: %s  (esc to clear)\n", m.filter)
+		b.WriteString("  " + styleBlue.Render("/ ") + m.filter + styleDim.Render("  (esc to clear)") + "\n")
 	default:
-		content += "Select a database service to monitor (/ to filter):\n"
+		b.WriteString("  " + styleDim.Render("/ to filter") + "\n")
 	}
+	b.WriteString("\n")
 
 	switch {
 	case m.err != "":
-		content += "Error: " + m.err
+		b.WriteString("  " + styleRed.Render("Error: "+m.err))
 	case len(m.services) == 0:
-		content += "No services found in ~/.pg_service.conf\nPress 'e' to edit the configuration file."
+		b.WriteString("  " + styleDim.Render("No services found in ~/.pg_service.conf") + "\n")
+		b.WriteString("  " + styleDim.Render("Press ") + styleKey.Render("e") + styleDim.Render(" to edit the configuration file."))
 	case len(m.visible) == 0:
-		content += lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("No services match the filter")
+		b.WriteString("  " + styleDim.Render("No services match the filter"))
 	default:
+		nameW := 12
+		for _, s := range m.visible {
+			nameW = max(nameW, len([]rune(s))+3)
+		}
 		for i, service := range m.visible {
-			var serviceText string
-			if i == m.selected {
-				// Selected service: bold, colored, with background
-				style := lipgloss.NewStyle().
-					Bold(true).
-					Foreground(lipgloss.Color("86")).
-					Background(lipgloss.Color("235"))
-				serviceText = style.Render("▶ " + service)
-			} else {
-				// Non-selected services: subtle background and padding to show they're clickable
-				baseStyle := lipgloss.NewStyle().
-					Background(lipgloss.Color("238")).
-					Foreground(lipgloss.Color("252"))
-				serviceText = baseStyle.Render(service)
+			selected := i == m.selected
+			marker := "  "
+			if selected {
+				marker = "▸ "
 			}
-
+			row := renderSegs([]seg{
+				{" ", styleFg},
+				{marker, styleBlue},
+				{fitWidth(service, nameW), styleFg.Bold(selected)},
+				{m.targets[service], styleDim},
+			}, max(20, m.width-2), selected)
 			// Wrap in bubblezone mark for clickability
-			content += zone.Mark(fmt.Sprintf("service_%d", i), serviceText)
-			content += "\n"
+			b.WriteString(" " + zone.Mark(fmt.Sprintf("service_%d", i), row) + "\n")
 		}
 	}
 
-	m.viewport.SetContent(content)
+	m.viewport.SetContent(b.String())
+}
+
+// pickerHints are the bottom-bar keys for the service picker
+func (m *PickerModel) pickerHints() []keyHint {
+	switch {
+	case m.showHelp:
+		return []keyHint{{"?", "close help"}, {"q", "quit"}}
+	case m.filtering:
+		return []keyHint{{"type", "to filter"}, {"↑/↓", "move"}, {"enter", "connect"}, {"esc", "clear"}}
+	}
+	return []keyHint{{"↑/↓", "move"}, {"enter", "connect"}, {"/", "filter"}, {"e", "edit"}, {"?", "help"}, {"q", "quit"}}
+}
+
+// serviceTarget describes where a service points: host:port/db, plus the
+// sign-in method when it isn't a password
+func serviceTarget(service string) string {
+	cfg, err := getDBConfig(service)
+	if err != nil || cfg.Host == "" {
+		return ""
+	}
+	target := cfg.Host
+	if cfg.Port != "" {
+		target += ":" + cfg.Port
+	}
+	if cfg.Database != "" {
+		target += "/" + cfg.Database
+	}
+	if cfg.UsesRDSIAM() {
+		target += " · rds-iam"
+	}
+	return target
 }
 
 func (m *PickerModel) customHelpView() string {
@@ -343,5 +369,5 @@ func (m *PickerModel) View() string {
 		return "Getting ready..."
 	}
 
-	return zone.Scan(m.viewport.View())
+	return zone.Scan(m.viewport.View() + "\n" + renderHints(m.pickerHints(), m.width))
 }

@@ -95,7 +95,6 @@ func (m *Model) runQuery(query Query) tea.Cmd {
 	seq := m.querySeq
 	db := m.db
 	service := m.service
-	chartWidth := GetChartWidth(m.width)
 	var stmtReq stmtRequest
 	if IsStatementsTab(query.Name) {
 		sv := m.statements()
@@ -143,7 +142,7 @@ func (m *Model) runQuery(query Query) tea.Cmd {
 		}
 
 		if IsHomeTab(query.Name) {
-			data, err := fetchHomeData(ctx, db, query.SQL, chartWidth)
+			data, err := fetchHomeData(ctx, db, query.SQL)
 			if err != nil {
 				return queryErrorMsg{seq: seq, err: fmt.Sprintf("Query failed: %v", err)}
 			}

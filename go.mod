@@ -3,7 +3,6 @@ module psq
 go 1.24
 
 require (
-	github.com/NimbleMarkets/ntcharts v0.3.1
 	github.com/aws/aws-sdk-go-v2 v1.47.1
 	github.com/aws/aws-sdk-go-v2/config v1.33.7
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.7
